@@ -30,10 +30,9 @@ export interface HttpPolicy {
    */
   tokenEndpoint: string | null;
   /**
-   * Pathnames where a POST is a documented READ query (pagination/filter), e.g.
-   * OneTrust's '/api/risk/v2/risks/pages'. POST is permitted to these paths on
-   * any allowlisted host. A trailing '*' matches by prefix (for parameterized
-   * paths). Empty/absent for GET-only adapters.
+   * Exact pathnames where a POST is a documented READ query (pagination/filter),
+   * e.g. OneTrust's '/api/risk/v2/risks/pages'. POST is permitted only to these
+   * exact paths on an allowlisted host. Empty/absent for GET-only adapters.
    */
   readPostPaths?: string[];
 }
@@ -151,9 +150,8 @@ export class GuardedHttp {
   async postRead<T>(url: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
     const u = this.assertHost(url);
     const paths = this.policy.readPostPaths ?? [];
-    const permitted = paths.some((p) =>
-      p.endsWith('*') ? u.pathname.startsWith(p.slice(0, -1)) : u.pathname === p,
-    );
+    // Exact pathname match only — no substring/prefix comparison on the URL.
+    const permitted = paths.includes(u.pathname);
     if (!permitted) {
       throw new PolicyViolation(
         `POST is only permitted to a declared read-query path (${paths.join(', ') || 'none'}), not ${u.pathname}.`,
