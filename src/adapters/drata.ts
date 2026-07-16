@@ -93,6 +93,9 @@ export const drataAdapter: Adapter = {
       risks: risks.map(mapRisk),
       people: users.map(mapPerson),
       policies: policies.map(mapPolicy),
+      // The v2 policy list carries no document URL, so there are no files to
+      // inline yet — the policy records import without attached documents.
+      files: [],
     };
   },
 };

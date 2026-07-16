@@ -14,6 +14,17 @@ test('guarded client rejects a plain-HTTP request', async () => {
   await assert.rejects(() => http.getJson('http://api.example.com/data'), PolicyViolation);
 });
 
+// Binary document download inherits the same host/HTTPS guard as getJson.
+test('getBinary rejects a non-allowlisted host', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.example.com'], tokenEndpoint: null });
+  await assert.rejects(() => http.getBinary('https://cdn.evil.net/policy.pdf'), PolicyViolation);
+});
+
+test('getBinary rejects a plain-HTTP document', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.example.com'], tokenEndpoint: null });
+  await assert.rejects(() => http.getBinary('http://api.example.com/policy.pdf'), PolicyViolation);
+});
+
 test('guarded client permits POST only to the declared token endpoint', async () => {
   const http = new GuardedHttp({ allowedHosts: ['api.example.com'], tokenEndpoint: 'https://api.example.com/token' });
   await assert.rejects(() => http.postToken('https://api.example.com/other', {}), PolicyViolation);

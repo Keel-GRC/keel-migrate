@@ -86,8 +86,10 @@ async function main(): Promise<void> {
       `  risks:    ${bundle.counts.risks}\n` +
       `  people:   ${bundle.counts.people}\n` +
       `  policies: ${bundle.counts.policies}\n` +
-      `\nEvidence and policy files are not yet downloaded (Phase 2). Import the\n` +
-      `bundle into your destination — in Keel: Admin → Data & migration → Import.`,
+      `  files:    ${bundle.counts.files}  (policy/evidence documents, inlined)\n` +
+      `\nPolicy documents served from the source's official API are downloaded and\n` +
+      `inlined; any served from an off-allowlist host keep a link in the bundle.\n` +
+      `Import into your destination — in Keel: Admin → Data & migration → Import.`,
   );
 }
 

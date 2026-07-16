@@ -66,9 +66,37 @@ export interface BundlePolicy {
   status?: string | null;
   approvedAt?: string | null;
   version?: string | null;
-  /** Source download URL for the policy document (fetched separately, Phase 2). */
+  /**
+   * Source download URL for the policy document. Kept as a fallback link even
+   * when the bytes are also inlined (see BundleFile) — and the only reference
+   * when the document host is off the adapter's allowlist so it can't be pulled.
+   */
   documentUrl?: string | null;
   raw?: Record<string, unknown>;
+}
+
+export type BundleFileKind = 'policy' | 'evidence';
+
+/**
+ * A binary document (policy PDF, evidence artifact) the adapter downloaded from
+ * the source over its official, allowlisted API and inlined as base64 — so the
+ * actual bytes travel with the bundle instead of a link that dies when the
+ * customer leaves the old platform. The destination verifies `sha256` on import.
+ */
+export interface BundleFile {
+  externalId: string;
+  kind: BundleFileKind;
+  /** For kind='policy': externalId of the policy this document belongs to. */
+  refExternalId?: string | null;
+  name: string;
+  contentType: string;
+  sizeBytes: number;
+  /** Hex SHA-256 of the decoded bytes. */
+  sha256: string;
+  /** Base64-encoded file bytes. */
+  contentBase64: string;
+  description?: string | null;
+  collectedAt?: string | null;
 }
 
 export interface BundleRecords {
@@ -76,6 +104,7 @@ export interface BundleRecords {
   risks: BundleRisk[];
   people: BundlePerson[];
   policies: BundlePolicy[];
+  files: BundleFile[];
 }
 
 export interface MigrationBundle {
@@ -105,6 +134,7 @@ export function makeBundle(
       risks: records.risks.length,
       people: records.people.length,
       policies: records.policies.length,
+      files: records.files.length,
     },
     records,
   };

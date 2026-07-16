@@ -72,10 +72,15 @@ Either writes `./out/migration-bundle.json`.
 | Risks   | title, description, likelihood/impact + residual, treatment, owner ref, status |
 | People  | email, name, job title, active/inactive, groups |
 | Policies| name, description, status, approval date, version, document URL |
+| Files   | policy/evidence **documents** — the actual bytes, inlined (base64 + sha256) |
 
 Each record keeps the untouched source object under `raw` for a lossless
-round-trip. Evidence and policy **files** (binaries) are not downloaded yet —
-that's on the roadmap.
+round-trip. Policy **documents** are downloaded and inlined into the bundle
+(`records.files`) when the source serves them from the adapter's own
+allowlisted API host — so you take the real PDFs, not links that expire when
+you leave. Documents served from an off-allowlist host (e.g. a signed CDN URL
+the adapter hasn't declared) keep their `documentUrl` link instead of being
+pulled, so the guarded "official APIs only" boundary stays intact.
 
 ## Sources
 
