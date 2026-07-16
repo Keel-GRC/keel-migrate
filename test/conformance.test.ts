@@ -121,7 +121,10 @@ test('resolvePolicy admits a valid tenant host and forms the token endpoint', ()
   const policy = resolvePolicy(onetrust.manifest, {
     [onetrust.manifest.dynamicHost.env]: host,
   });
-  assert.ok(policy.allowedHosts.includes(host), 'tenant host added to allowlist');
+  assert.ok(
+    policy.allowedHosts.some((h) => h === host),
+    'tenant host added to allowlist',
+  );
   if (onetrust.manifest.tokenPath) {
     assert.equal(policy.tokenEndpoint, `https://${host}${onetrust.manifest.tokenPath}`);
   }
