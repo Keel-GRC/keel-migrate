@@ -119,7 +119,10 @@ function mapVendor(v: any): BundleVendor {
     externalId: v.id,
     name: v.name,
     website: v.websiteUrl ?? null,
-    criticality: toCriticality(v.residualRiskLevel ?? v.inherentRiskLevel),
+    // Keep Vanta's inherent/residual split: criticality is inherent, residual is
+    // carried separately so the destination can preserve both (not collapse to one).
+    criticality: toCriticality(v.inherentRiskLevel ?? v.residualRiskLevel),
+    residualCriticality: v.residualRiskLevel ? toCriticality(v.residualRiskLevel) : null,
     status: v.status ?? null,
     reviewLastAt: v.lastSecurityReviewCompletionDate ?? null,
     reviewNextAt: v.nextSecurityReviewDueDate ?? null,
