@@ -16,8 +16,12 @@
 export interface HttpPolicy {
   /** Hostnames this adapter is allowed to contact, e.g. ['api.vanta.com']. */
   allowedHosts: string[];
-  /** The one URL permitted for a POST (OAuth token exchange). */
-  tokenEndpoint: string;
+  /**
+   * The one URL permitted for a POST (OAuth token exchange), or `null` for
+   * adapters that authenticate with a static API key — those perform no POST at
+   * all, so the guarded client rejects every write.
+   */
+  tokenEndpoint: string | null;
 }
 
 export class PolicyViolation extends Error {}
@@ -59,6 +63,11 @@ export class GuardedHttp {
   /** The ONLY permitted write: exchange OAuth credentials at the declared token endpoint. */
   async postToken<T>(url: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
     this.assertHost(url);
+    if (this.policy.tokenEndpoint === null) {
+      throw new PolicyViolation(
+        'This adapter authenticates with a static API key and performs no POST; writes are refused.',
+      );
+    }
     if (url !== this.policy.tokenEndpoint) {
       throw new PolicyViolation(
         `POST is only permitted to the declared token endpoint (${this.policy.tokenEndpoint}), not ${url}.`,

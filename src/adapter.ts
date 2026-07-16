@@ -27,11 +27,14 @@ export interface AdapterManifest {
   apiBase: string;
   /** Hostnames the guarded client will permit for this adapter. */
   allowedHosts: string[];
-  /** The single URL permitted for a POST (OAuth token exchange). */
-  tokenEndpoint: string;
+  /**
+   * The single URL permitted for a POST (OAuth token exchange), or `null` for
+   * static-API-key adapters that perform no write at all.
+   */
+  tokenEndpoint: string | null;
   /** Every documented endpoint this adapter reads. */
   endpoints: EndpointRef[];
-  /** OAuth scopes required (read-only). */
+  /** OAuth scopes required (read-only). Empty for API-key adapters. */
   scopes: string[];
   /** Environment variables the adapter reads credentials from. */
   credentialEnv: string[];

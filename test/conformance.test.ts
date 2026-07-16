@@ -19,6 +19,11 @@ test('guarded client permits POST only to the declared token endpoint', async ()
   await assert.rejects(() => http.postToken('https://api.example.com/other', {}), PolicyViolation);
 });
 
+test('guarded client refuses every POST for an API-key adapter (no token endpoint)', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.example.com'], tokenEndpoint: null });
+  await assert.rejects(() => http.postToken('https://api.example.com/token', {}), PolicyViolation);
+});
+
 // Every adapter must fully declare what it touches (the manifest conformance rule).
 for (const [name, adapter] of Object.entries(adapters)) {
   test(`adapter "${name}" declares a conformant manifest`, () => {
@@ -29,9 +34,14 @@ for (const [name, adapter] of Object.entries(adapters)) {
       assert.ok(/^https:\/\//.test(ep.docUrl), `endpoint ${ep.path} must link to official docs`);
     }
     assert.ok(/^https:\/\//.test(m.officialDocsUrl), 'officialDocsUrl must be set');
-    const tokenHost = new URL(m.tokenEndpoint).hostname;
-    assert.ok(m.allowedHosts.includes(tokenHost), 'token endpoint host must be allowlisted');
+    // OAuth adapters declare a token endpoint (host must be allowlisted); API-key
+    // adapters declare null (they perform no write at all).
+    if (m.tokenEndpoint !== null) {
+      const tokenHost = new URL(m.tokenEndpoint).hostname;
+      assert.ok(m.allowedHosts.includes(tokenHost), 'token endpoint host must be allowlisted');
+    }
     assert.ok(m.credentialEnv.length > 0, 'must declare credential env vars');
+    // Scopes are OAuth read scopes; API-key adapters have none.
     assert.ok(m.scopes.every((s) => /read/i.test(s)), 'scopes should be read-only');
   });
 }
