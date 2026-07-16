@@ -18,7 +18,10 @@ export interface BundleVendor {
   externalId: string;
   name: string;
   website?: string | null;
+  /** Inherent (pre-control) criticality. */
   criticality?: Criticality | null;
+  /** Residual (post-control) criticality, when the source scores it separately. */
+  residualCriticality?: Criticality | null;
   status?: string | null;
   reviewLastAt?: string | null;
   reviewNextAt?: string | null;
