@@ -76,9 +76,9 @@ export interface Adapter {
  * Normalize a user-supplied host to a clean hostname: accept a bare host or a
  * pasted URL, but ALWAYS resolve through the URL parser so the result is only
  * ever the hostname — never userinfo, port, path, query, or fragment. Returns ''
- * for anything unparseable. (Parsing here is what makes the suffix check in
+ * for anything unparseable. (Parsing here is what makes the domain check in
  * resolvePolicy sound: a crafted value like `attacker.com#.onetrust.com` resolves
- * to hostname `attacker.com`, which fails the `.onetrust.com` check.)
+ * to hostname `attacker.com`, which is not under `onetrust.com`.)
  */
 export function normalizeHost(raw: string): string {
   const s = raw.trim();
@@ -89,6 +89,20 @@ export function normalizeHost(raw: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * True iff `host` is exactly `domain` or a subdomain of it — compared label by
+ * label (not a substring/`endsWith` check), so `onetrust.com.attacker.com` and
+ * `notonetrust.com` are correctly rejected.
+ */
+export function isHostUnderDomain(host: string, domain: string): boolean {
+  if (!host || !domain) return false;
+  if (host === domain) return true;
+  const h = host.split('.');
+  const d = domain.split('.');
+  if (h.length <= d.length) return false;
+  return d.every((label, i) => label === h[h.length - d.length + i]);
 }
 
 /** Build the HttpPolicy the guarded client enforces from an adapter manifest. */
@@ -117,14 +131,11 @@ export function resolvePolicy(
   if (!raw) return policy; // absent host is caught later as a missing credential
   const host = normalizeHost(raw);
   // `host` is a clean hostname (URL-parsed). Permit it only if it IS the allowed
-  // registrable domain or a subdomain of it — an exact label-boundary check, not a
-  // loose substring match.
-  const permitted =
-    host.length > 0 &&
-    m.dynamicHost.allowedSuffixes.some((suffix) => {
-      const domain = suffix.replace(/^\./, '');
-      return host === domain || host.endsWith(`.${domain}`);
-    });
+  // registrable domain or a subdomain of it — an exact DNS-label comparison, not
+  // a substring match.
+  const permitted = m.dynamicHost.allowedSuffixes.some((suffix) =>
+    isHostUnderDomain(host, suffix.replace(/^\./, '')),
+  );
   if (!permitted) {
     throw new Error(
       `${m.dynamicHost.env} must be a host under ${m.dynamicHost.allowedSuffixes.join(' or ')} (got "${raw}").`,
