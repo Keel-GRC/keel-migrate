@@ -19,6 +19,18 @@ export interface EndpointRef {
   docUrl: string;
 }
 
+/**
+ * For multi-tenant platforms where the API host is the customer's own tenant
+ * (e.g. `yourco.my.onetrust.com`, or a regional `app-eu.onetrust.com`): the env
+ * var that supplies the host, and the suffixes an accepted host MUST end with.
+ * The suffix check is what stops an arbitrary host being injected into the
+ * allowlist — only hosts under the vendor's own domain are ever permitted.
+ */
+export interface DynamicHost {
+  env: string;
+  allowedSuffixes: string[];
+}
+
 export interface AdapterManifest {
   source: string;
   displayName: string;
@@ -29,11 +41,25 @@ export interface AdapterManifest {
   allowedHosts: string[];
   /**
    * The single URL permitted for a POST (OAuth token exchange), or `null` for
-   * static-API-key adapters that perform no write at all.
+   * static-API-key adapters and dynamic-host adapters (which resolve the token
+   * URL at runtime from `tokenPath` + the customer host — see resolvePolicy).
    */
   tokenEndpoint: string | null;
-  /** Every documented endpoint this adapter reads. */
+  /**
+   * For dynamic-host OAuth adapters: the token path, combined with the resolved
+   * customer host to form the concrete token endpoint at runtime.
+   */
+  tokenPath?: string | null;
+  /** Every documented endpoint this adapter reads over GET. */
   endpoints: EndpointRef[];
+  /**
+   * Documented endpoints this adapter reads over POST (pagination/filter
+   * queries) — some enterprise APIs paginate reads via POST. Declared
+   * separately so the guarded client can allow POST to exactly these paths.
+   */
+  readPostEndpoints?: EndpointRef[];
+  /** Multi-tenant host resolution, when the API host is the customer's tenant. */
+  dynamicHost?: DynamicHost | null;
   /** OAuth scopes required (read-only). Empty for API-key adapters. */
   scopes: string[];
   /** Environment variables the adapter reads credentials from. */
@@ -46,7 +72,47 @@ export interface Adapter {
   export(creds: Record<string, string>, http: GuardedHttp): Promise<BundleRecords>;
 }
 
+/** Normalize a user-supplied host: accept a bare host or a pasted URL. */
+export function normalizeHost(raw: string): string {
+  const s = raw.trim();
+  try {
+    return new URL(s).hostname;
+  } catch {
+    return s.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  }
+}
+
 /** Build the HttpPolicy the guarded client enforces from an adapter manifest. */
 export function policyFromManifest(m: AdapterManifest): HttpPolicy {
-  return { allowedHosts: m.allowedHosts, tokenEndpoint: m.tokenEndpoint };
+  return {
+    allowedHosts: m.allowedHosts,
+    tokenEndpoint: m.tokenEndpoint,
+    readPostPaths: (m.readPostEndpoints ?? []).map((e) => e.path),
+  };
+}
+
+/**
+ * The policy with any dynamic (customer-tenant) host resolved from the
+ * environment: the host is validated against the manifest's allowed suffixes
+ * and added to the allowlist, and — for OAuth dynamic-host adapters — the
+ * concrete token endpoint is formed from `tokenPath` + that host. Throws if the
+ * declared env var is set to a host outside the vendor's own domain.
+ */
+export function resolvePolicy(
+  m: AdapterManifest,
+  env: Record<string, string | undefined> = process.env,
+): HttpPolicy {
+  const policy = policyFromManifest(m);
+  if (!m.dynamicHost) return policy;
+  const raw = env[m.dynamicHost.env];
+  if (!raw) return policy; // absent host is caught later as a missing credential
+  const host = normalizeHost(raw);
+  if (!m.dynamicHost.allowedSuffixes.some((s) => host === s || host.endsWith(s))) {
+    throw new Error(
+      `${m.dynamicHost.env} must be a host ending in ${m.dynamicHost.allowedSuffixes.join(' or ')} (got "${raw}").`,
+    );
+  }
+  policy.allowedHosts = [...policy.allowedHosts, host];
+  if (m.tokenPath) policy.tokenEndpoint = `https://${host}${m.tokenPath}`;
+  return policy;
 }

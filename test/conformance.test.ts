@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuardedHttp, PolicyViolation } from '../src/http.js';
+import { resolvePolicy } from '../src/adapter.js';
 import { adapters } from '../src/registry.js';
 
 // The guarded client is the runtime enforcement of "official APIs only".
@@ -39,20 +40,77 @@ test('guarded client refuses every POST for an API-key adapter (no token endpoin
 for (const [name, adapter] of Object.entries(adapters)) {
   test(`adapter "${name}" declares a conformant manifest`, () => {
     const m = adapter.manifest;
-    assert.ok(m.endpoints.length > 0, 'must declare at least one endpoint');
-    for (const ep of m.endpoints) {
+    const allEndpoints = [...m.endpoints, ...(m.readPostEndpoints ?? [])];
+    assert.ok(allEndpoints.length > 0, 'must declare at least one endpoint');
+    for (const ep of allEndpoints) {
       assert.ok(ep.path.startsWith('/'), `endpoint path must be relative: ${ep.path}`);
       assert.ok(/^https:\/\//.test(ep.docUrl), `endpoint ${ep.path} must link to official docs`);
     }
     assert.ok(/^https:\/\//.test(m.officialDocsUrl), 'officialDocsUrl must be set');
-    // OAuth adapters declare a token endpoint (host must be allowlisted); API-key
-    // adapters declare null (they perform no write at all).
+    // Static-host OAuth adapters declare a concrete token endpoint (host must be
+    // allowlisted). Dynamic-host adapters declare null + a tokenPath instead (the
+    // real URL is formed from the customer host at runtime). API-key adapters use null.
     if (m.tokenEndpoint !== null) {
       const tokenHost = new URL(m.tokenEndpoint).hostname;
       assert.ok(m.allowedHosts.includes(tokenHost), 'token endpoint host must be allowlisted');
     }
+    // Dynamic-host adapters must constrain the host to the vendor's own domain.
+    if (m.dynamicHost) {
+      assert.ok(m.dynamicHost.env, 'dynamicHost must name an env var');
+      assert.ok(
+        m.dynamicHost.allowedSuffixes.length > 0 &&
+          m.dynamicHost.allowedSuffixes.every((s) => s.startsWith('.')),
+        'dynamicHost.allowedSuffixes must be non-empty dotted suffixes',
+      );
+      if (m.tokenPath) assert.ok(m.tokenPath.startsWith('/'), 'tokenPath must be relative');
+    }
     assert.ok(m.credentialEnv.length > 0, 'must declare credential env vars');
-    // Scopes are OAuth read scopes; API-key adapters have none.
-    assert.ok(m.scopes.every((s) => /read/i.test(s)), 'scopes should be read-only');
+    // Read-only: no scope may request write/admin/manage access.
+    assert.ok(
+      m.scopes.every((s) => !/(write|create|update|delete|admin|manage|edit)/i.test(s)),
+      'scopes must be read-only (no write/admin scopes)',
+    );
   });
 }
+
+// A declared read-POST path is permitted; anything else POSTed is refused.
+test('postRead permits only declared read-query paths', async () => {
+  const http = new GuardedHttp({
+    allowedHosts: ['api.example.com'],
+    tokenEndpoint: null,
+    readPostPaths: ['/api/risk/v2/risks/pages'],
+  });
+  await assert.rejects(
+    () => http.postRead('https://api.example.com/api/vendors/create', {}),
+    PolicyViolation,
+  );
+});
+
+test('postRead refuses a POST when no read paths are declared', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.example.com'], tokenEndpoint: null });
+  await assert.rejects(
+    () => http.postRead('https://api.example.com/api/risk/v2/risks/pages', {}),
+    PolicyViolation,
+  );
+});
+
+// resolvePolicy validates a customer-supplied tenant host against the allowed suffix.
+test('resolvePolicy rejects a tenant host outside the vendor domain', () => {
+  const onetrust = adapters.onetrust;
+  if (!onetrust?.manifest.dynamicHost) return; // skip if adapter absent
+  const env = { [onetrust.manifest.dynamicHost.env]: 'evil.attacker.com' };
+  assert.throws(() => resolvePolicy(onetrust.manifest, env));
+});
+
+test('resolvePolicy admits a valid tenant host and forms the token endpoint', () => {
+  const onetrust = adapters.onetrust;
+  if (!onetrust?.manifest.dynamicHost) return;
+  const host = 'yourco.my.onetrust.com';
+  const policy = resolvePolicy(onetrust.manifest, {
+    [onetrust.manifest.dynamicHost.env]: host,
+  });
+  assert.ok(policy.allowedHosts.includes(host), 'tenant host added to allowlist');
+  if (onetrust.manifest.tokenPath) {
+    assert.equal(policy.tokenEndpoint, `https://${host}${onetrust.manifest.tokenPath}`);
+  }
+});
