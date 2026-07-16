@@ -95,11 +95,23 @@ test('postRead refuses a POST when no read paths are declared', async () => {
 });
 
 // resolvePolicy validates a customer-supplied tenant host against the allowed suffix.
-test('resolvePolicy rejects a tenant host outside the vendor domain', () => {
+test('resolvePolicy rejects tenant hosts outside the vendor domain', () => {
   const onetrust = adapters.onetrust;
   if (!onetrust?.manifest.dynamicHost) return; // skip if adapter absent
-  const env = { [onetrust.manifest.dynamicHost.env]: 'evil.attacker.com' };
-  assert.throws(() => resolvePolicy(onetrust.manifest, env));
+  const env = onetrust.manifest.dynamicHost.env;
+  // Plain wrong domain, plus crafted look-alikes that a naive substring/endsWith
+  // check would let through (fragment, path, userinfo, suffix-in-the-middle).
+  for (const bad of [
+    'evil.attacker.com',
+    'attacker.com#.onetrust.com',
+    'attacker.com/.onetrust.com',
+    'onetrust.com.attacker.com',
+    'notonetrust.com',
+    'user@attacker.com',
+    'https://attacker.com/.onetrust.com',
+  ]) {
+    assert.throws(() => resolvePolicy(onetrust.manifest, { [env]: bad }), undefined, `should reject ${bad}`);
+  }
 });
 
 test('resolvePolicy admits a valid tenant host and forms the token endpoint', () => {

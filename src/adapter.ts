@@ -72,13 +72,22 @@ export interface Adapter {
   export(creds: Record<string, string>, http: GuardedHttp): Promise<BundleRecords>;
 }
 
-/** Normalize a user-supplied host: accept a bare host or a pasted URL. */
+/**
+ * Normalize a user-supplied host to a clean hostname: accept a bare host or a
+ * pasted URL, but ALWAYS resolve through the URL parser so the result is only
+ * ever the hostname — never userinfo, port, path, query, or fragment. Returns ''
+ * for anything unparseable. (Parsing here is what makes the suffix check in
+ * resolvePolicy sound: a crafted value like `attacker.com#.onetrust.com` resolves
+ * to hostname `attacker.com`, which fails the `.onetrust.com` check.)
+ */
 export function normalizeHost(raw: string): string {
   const s = raw.trim();
+  if (!s) return '';
   try {
-    return new URL(s).hostname;
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`);
+    return u.hostname;
   } catch {
-    return s.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    return '';
   }
 }
 
@@ -107,9 +116,18 @@ export function resolvePolicy(
   const raw = env[m.dynamicHost.env];
   if (!raw) return policy; // absent host is caught later as a missing credential
   const host = normalizeHost(raw);
-  if (!m.dynamicHost.allowedSuffixes.some((s) => host === s || host.endsWith(s))) {
+  // `host` is a clean hostname (URL-parsed). Permit it only if it IS the allowed
+  // registrable domain or a subdomain of it — an exact label-boundary check, not a
+  // loose substring match.
+  const permitted =
+    host.length > 0 &&
+    m.dynamicHost.allowedSuffixes.some((suffix) => {
+      const domain = suffix.replace(/^\./, '');
+      return host === domain || host.endsWith(`.${domain}`);
+    });
+  if (!permitted) {
     throw new Error(
-      `${m.dynamicHost.env} must be a host ending in ${m.dynamicHost.allowedSuffixes.join(' or ')} (got "${raw}").`,
+      `${m.dynamicHost.env} must be a host under ${m.dynamicHost.allowedSuffixes.join(' or ')} (got "${raw}").`,
     );
   }
   policy.allowedHosts = [...policy.allowedHosts, host];
