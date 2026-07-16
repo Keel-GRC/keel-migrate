@@ -1,0 +1,46 @@
+{
+  "name": "keel-migrate",
+  "version": "0.1.0",
+  "description": "Portable, read-only GRC data export — take your registers, policies, and evidence out of Vanta and other platforms into an open bundle format. Runs locally; your credentials never leave your machine.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/Keel-GRC/keel-migrate#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keel-GRC/keel-migrate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Keel-GRC/keel-migrate/issues"
+  },
+  "bin": {
+    "keel-migrate": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "start": "tsx src/cli.ts",
+    "export": "tsx src/cli.ts export"
+  },
+  "keywords": [
+    "grc",
+    "compliance",
+    "data-portability",
+    "vanta",
+    "migration",
+    "export"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
