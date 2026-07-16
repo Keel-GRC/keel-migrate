@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { GuardedHttp } from './http.js';
-import { policyFromManifest } from './adapter.js';
+import { resolvePolicy } from './adapter.js';
 import { makeBundle } from './bundle.js';
 import { adapters } from './registry.js';
 
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   if (missing.length) fail(`Set these environment variables first: ${missing.join(', ')}`);
 
   const outDir = values.out || './keel-migrate-out';
-  const http = new GuardedHttp(policyFromManifest(adapter.manifest));
+  const http = new GuardedHttp(resolvePolicy(adapter.manifest, process.env));
 
   console.log(`Exporting from ${adapter.manifest.displayName} (read-only, official API)…`);
   const records = await adapter.export(creds, http);

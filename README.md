@@ -86,6 +86,12 @@ pulled, so the guarded "official APIs only" boundary stays intact.
 
 - ✅ **Vanta** (`--source vanta`) — OAuth client-credentials, read-only
 - ✅ **Drata** (`--source drata`) — static API key, read-only
+- 🧪 **OneTrust** (`--source onetrust`) — OAuth client-credentials against your own
+  tenant host. Set `ONETRUST_HOSTNAME` (e.g. `yourco.my.onetrust.com`),
+  `ONETRUST_CLIENT_ID`, `ONETRUST_CLIENT_SECRET`. Exports **users** and the **risk
+  register** today; built to OneTrust's public API docs — validate against your
+  tenant, and expect vendors/policies to follow once their per-tenant list paths
+  are confirmed.
 - 🚧 Secureframe and others — [contributions welcome](./CONTRIBUTING.md)
 
 ## The bundle format
