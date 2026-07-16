@@ -42,8 +42,10 @@ npm run build
 keel-migrate export --source <name> --out <dir>
 ```
 
-Credentials come from environment variables. For **Vanta**, create a **read-only**
-API client (scope `vanta-api.all:read`) in your Vanta admin settings, then:
+Credentials come from environment variables declared by each source adapter.
+
+**Vanta** — create a **read-only** API client (scope `vanta-api.all:read`) in your
+Vanta admin settings, then:
 
 ```bash
 export VANTA_CLIENT_ID='vci_…'
@@ -51,7 +53,16 @@ export VANTA_CLIENT_SECRET='vcs_…'
 keel-migrate export --source vanta --out ./out
 ```
 
-This writes `./out/migration-bundle.json`.
+**Drata** — create an API key in your Drata workspace (Settings → API keys). The
+key is used **read-only** (the tool only issues GETs against Drata's Public API),
+then:
+
+```bash
+export DRATA_API_KEY='…'
+keel-migrate export --source drata --out ./out
+```
+
+Either writes `./out/migration-bundle.json`.
 
 ## What it exports (v1)
 
@@ -68,8 +79,9 @@ that's on the roadmap.
 
 ## Sources
 
-- ✅ **Vanta** (`--source vanta`)
-- 🚧 Drata, Secureframe, and others — [contributions welcome](./CONTRIBUTING.md)
+- ✅ **Vanta** (`--source vanta`) — OAuth client-credentials, read-only
+- ✅ **Drata** (`--source drata`) — static API key, read-only
+- 🚧 Secureframe and others — [contributions welcome](./CONTRIBUTING.md)
 
 ## The bundle format
 
