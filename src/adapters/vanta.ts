@@ -14,6 +14,7 @@ import type {
   BundlePolicy,
   Criticality,
 } from '../bundle.js';
+import { fetchPolicyDocuments } from '../files.js';
 
 const API_BASE = 'https://api.vanta.com';
 const TOKEN_ENDPOINT = `${API_BASE}/oauth/token`;
@@ -105,11 +106,19 @@ export const vantaAdapter: Adapter = {
       listAll<any>(http, token, '/v1/policies'),
     ]);
 
+    const mappedPolicies = policies.map(mapPolicy);
+    // Pull each policy's approved document where it's served from an allowlisted
+    // host; off-allowlist documents keep their documentUrl link (see files.ts).
+    const { files } = await fetchPolicyDocuments(http, mappedPolicies, {
+      Authorization: `Bearer ${token}`,
+    });
+
     return {
       vendors: vendors.map(mapVendor),
       risks: risks.map(mapRisk),
       people: people.map(mapPerson),
-      policies: policies.map(mapPolicy),
+      policies: mappedPolicies,
+      files,
     };
   },
 };

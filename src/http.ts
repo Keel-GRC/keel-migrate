@@ -7,7 +7,10 @@
  *   - the ONLY write permitted is the single declared OAuth token endpoint —
  *     everything else is GET (read-only by construction, so the tool provably
  *     cannot mutate the source system);
- *   - responses MUST be JSON (we consume documented REST APIs, not scraped HTML).
+ *   - API responses MUST be JSON (we consume documented REST APIs, not scraped
+ *     HTML). The one exception is `getBinary`, used to download a document the
+ *     API references (a policy PDF): still GET-only, still HTTPS, still against
+ *     an allowlisted host, and size-capped — bytes rather than JSON.
  *
  * A violation throws before any network call, so "official, documented,
  * read-only" is verifiable in code rather than promised in docs.
@@ -58,6 +61,39 @@ export class GuardedHttp {
       throw new HttpError(`GET ${url} → HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`, res.status);
     }
     return (await res.json()) as T;
+  }
+
+  /**
+   * Read-only binary GET for a document the API references (e.g. a policy PDF).
+   * Same guarantees as getJson — allowlisted host, HTTPS, GET — but returns raw
+   * bytes and enforces a hard size cap (checked against Content-Length up front
+   * and again after reading, so a lying/absent header can't blow past it).
+   */
+  async getBinary(
+    url: string,
+    headers: Record<string, string> = {},
+    maxBytes = 25 * 1024 * 1024,
+  ): Promise<{ bytes: Uint8Array; contentType: string }> {
+    this.assertHost(url);
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      throw new HttpError(
+        `GET ${url} → HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`,
+        res.status,
+      );
+    }
+    const declared = Number(res.headers.get('content-length') ?? '');
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new HttpError(`Document at ${url} exceeds the ${maxBytes}-byte cap.`, 413);
+    }
+    const ab = await res.arrayBuffer();
+    if (ab.byteLength > maxBytes) {
+      throw new HttpError(`Document at ${url} exceeds the ${maxBytes}-byte cap.`, 413);
+    }
+    const contentType = (res.headers.get('content-type') ?? 'application/octet-stream')
+      .split(';')[0]
+      .trim();
+    return { bytes: new Uint8Array(ab), contentType };
   }
 
   /** The ONLY permitted write: exchange OAuth credentials at the declared token endpoint. */
