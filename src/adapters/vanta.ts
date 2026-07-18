@@ -6,6 +6,7 @@
  */
 import type { Adapter, AdapterManifest } from '../adapter.js';
 import type { GuardedHttp } from '../http.js';
+import { SizeBudget, DEFAULT_MAX_INLINE_BYTES } from '../files.js';
 import type {
   BundleRecords,
   BundleVendor,
@@ -100,7 +101,7 @@ function toCriticality(level: unknown): Criticality | null {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const vantaAdapter: Adapter = {
   manifest,
-  async export(creds, http): Promise<BundleRecords> {
+  async export(creds, http, opts): Promise<BundleRecords> {
     const token = (
       await http.postToken<{ access_token?: string }>(TOKEN_ENDPOINT, {
         client_id: creds.VANTA_CLIENT_ID,
@@ -119,16 +120,39 @@ export const vantaAdapter: Adapter = {
     ]);
 
     const authHeader = { Authorization: `Bearer ${token}` };
+    // One shared byte budget across policy + evidence inlining keeps the whole
+    // bundle serializable (under V8's max string length) and importable.
+    const budget = new SizeBudget(opts?.maxInlineBytes ?? DEFAULT_MAX_INLINE_BYTES);
 
     const mappedPolicies = policies.map(mapPolicy);
     // Pull each policy's approved document where it's served from an allowlisted
     // host; off-allowlist documents keep their documentUrl link (see files.ts).
-    const { files: policyFiles } = await fetchPolicyDocuments(http, mappedPolicies, authHeader);
+    const { files: policyFiles, deferred: policyDeferred } = await fetchPolicyDocuments(
+      http,
+      mappedPolicies,
+      authHeader,
+      { budget },
+    );
 
     // Evidence: list documents, then each document's uploaded files, and pull the
     // bytes from the /media endpoint (all on api.vanta.com, already allowlisted).
     const evidenceRefs = await collectEvidenceRefs(http, token);
-    const { files: evidenceFiles } = await fetchEvidenceDocuments(http, evidenceRefs, authHeader);
+    const { files: evidenceFiles, deferred: evidenceDeferred } = await fetchEvidenceDocuments(
+      http,
+      evidenceRefs,
+      authHeader,
+      { budget },
+    );
+
+    const deferred = policyDeferred + evidenceDeferred;
+    if (deferred > 0) {
+      console.warn(
+        `${deferred} document(s) were left out to keep the bundle within its size limit. ` +
+          `To include more, re-run with a higher --max-bundle-mb (the trade-off is a larger ` +
+          `bundle that is slower, or too big, to import). The registers, policies, and the ` +
+          `evidence that fit are all in this bundle.`,
+      );
+    }
 
     return {
       vendors: vendors.map(mapVendor),

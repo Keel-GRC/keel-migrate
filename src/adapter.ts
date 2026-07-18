@@ -66,10 +66,24 @@ export interface AdapterManifest {
   credentialEnv: string[];
 }
 
+/** Options passed to an adapter's export (from the CLI). */
+export interface ExportOptions {
+  /**
+   * Ceiling on total inlined file bytes (base64) for the bundle. Adapters that
+   * inline documents cap their downloads to keep the bundle serializable and
+   * importable. Omitted -> the adapter's default.
+   */
+  maxInlineBytes?: number;
+}
+
 export interface Adapter {
   manifest: AdapterManifest;
   /** Pull the source's data and return neutral bundle records. Read-only. */
-  export(creds: Record<string, string>, http: GuardedHttp): Promise<BundleRecords>;
+  export(
+    creds: Record<string, string>,
+    http: GuardedHttp,
+    opts?: ExportOptions,
+  ): Promise<BundleRecords>;
 }
 
 /**

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuardedHttp, PolicyViolation } from '../src/http.js';
 import { resolvePolicy } from '../src/adapter.js';
-import { fetchEvidenceDocuments } from '../src/files.js';
+import { fetchEvidenceDocuments, SizeBudget } from '../src/files.js';
 import { adapters } from '../src/registry.js';
 
 // The guarded client is the runtime enforcement of "official APIs only".
@@ -106,6 +106,34 @@ test('getJson retries a 429 and then succeeds', async () => {
     const out = await http.getJson<{ ok: boolean }>('https://api.example.com/data');
     assert.equal(out.ok, true);
     assert.equal(calls, 2, 'should have retried exactly once');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// The size budget caps total inlined bytes: files that fit are kept, the rest
+// are deferred (not silently dropped) so the bundle stays serializable/importable.
+test('fetchEvidenceDocuments defers files once the size budget is exhausted', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.vanta.com'], tokenEndpoint: null });
+  const realFetch = globalThis.fetch;
+  const body = new Uint8Array(30_000); // ~40 KB once base64-encoded
+  globalThis.fetch = (async () =>
+    new Response(body, { status: 200, headers: { 'content-type': 'application/pdf' } })) as typeof fetch;
+  try {
+    // Budget fits one ~40 KB (encoded) file but not two.
+    const budget = new SizeBudget(45_000);
+    const { files, deferred, skipped } = await fetchEvidenceDocuments(
+      http,
+      [
+        { externalId: 'd:1', mediaUrl: 'https://api.vanta.com/v1/documents/d/uploads/1/media' },
+        { externalId: 'd:2', mediaUrl: 'https://api.vanta.com/v1/documents/d/uploads/2/media' },
+      ],
+      {},
+      { budget },
+    );
+    assert.equal(files.length, 1, 'first file fits the budget');
+    assert.equal(deferred, 1, 'second file is deferred, not dropped');
+    assert.equal(skipped, 0);
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -90,6 +90,13 @@ UI link for the approved policy PDF (no downloadable file id), so those specific
 policy PDFs remain a manual export. Evidence documents, which do have a media
 download endpoint, are pulled automatically.
 
+Because every document is inlined as base64 into a single JSON file that the
+destination reads whole, the total inlined bytes are capped (default **45 MB**,
+set with `--max-bundle-mb`). This keeps the bundle serializable and importable;
+documents beyond the cap are left out and reported at the end of the run. If you
+have a large evidence library, raise the cap or export in stages. (A streamed,
+multi-part transport for very large evidence sets is on the roadmap.)
+
 ## Sources
 
 - ✅ **Vanta** (`--source vanta`) — OAuth client-credentials, read-only

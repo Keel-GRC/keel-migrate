@@ -71,10 +71,44 @@ export function fileFromBytes(
   };
 }
 
+/**
+ * Default ceiling on the TOTAL inlined file bytes (base64) across a bundle.
+ * Evidence is inlined as base64 in one JSON file, and that file is later read
+ * whole and JSON-parsed by the destination importer (Keel's runs in a
+ * memory-bounded Worker). Left unbounded, a large evidence library both
+ * overflows V8's ~512 MB max string length when the bundle is serialized AND
+ * produces a bundle too big to import. So we cap the inlined total; documents
+ * beyond the cap keep their metadata but are counted as deferred, and a re-run
+ * or a higher --max-bundle-mb picks them up. 45 MB (encoded) keeps the bundle
+ * importable with headroom.
+ */
+export const DEFAULT_MAX_INLINE_BYTES = 45 * 1024 * 1024;
+
+/**
+ * Running budget for total inlined (base64) bytes. Shared across the policy and
+ * evidence passes so the whole bundle stays under one ceiling. `tryTake` admits
+ * a file only if it fits, so smaller files can still land after a big one is
+ * turned away.
+ */
+export class SizeBudget {
+  private used = 0;
+  constructor(private readonly maxBytes: number) {}
+  get remaining(): number {
+    return Math.max(0, this.maxBytes - this.used);
+  }
+  tryTake(bytes: number): boolean {
+    if (this.used + bytes > this.maxBytes) return false;
+    this.used += bytes;
+    return true;
+  }
+}
+
 export interface PolicyDocResult {
   files: BundleFile[];
   /** Documents referenced but not pulled (off-allowlist host, HTTP error, too large). */
   skipped: number;
+  /** Documents downloaded but deferred because the bundle size budget was reached. */
+  deferred: number;
 }
 
 /**
@@ -102,6 +136,8 @@ export interface EvidenceDocResult {
   files: BundleFile[];
   /** Artifacts referenced but not pulled (off-allowlist host, HTTP error, empty). */
   skipped: number;
+  /** Artifacts downloaded but deferred because the bundle size budget was reached. */
+  deferred: number;
 }
 
 function evidenceName(ref: EvidenceRef, contentType: string): string {
@@ -126,15 +162,22 @@ export async function fetchEvidenceDocuments(
   http: GuardedHttp,
   refs: EvidenceRef[],
   headers: Record<string, string> = {},
-  opts: { maxBytes?: number } = {},
+  opts: { maxBytes?: number; budget?: SizeBudget } = {},
 ): Promise<EvidenceDocResult> {
   const files: BundleFile[] = [];
   let skipped = 0;
+  let deferred = 0;
   const collectedAt = new Date().toISOString();
 
   for (const ref of refs) {
     if (!ref.mediaUrl) {
       skipped++;
+      continue;
+    }
+    // Stop downloading once the bundle budget is exhausted: further bytes would
+    // only be discarded, and pulling them wastes API calls / rate limit.
+    if (opts.budget && opts.budget.remaining === 0) {
+      deferred++;
       continue;
     }
     try {
@@ -149,20 +192,25 @@ export async function fetchEvidenceDocuments(
         contentType && contentType !== 'application/octet-stream'
           ? contentType
           : (ref.contentType ?? contentType);
-      files.push(
-        fileFromBytes(
-          {
-            externalId: ref.externalId,
-            kind: 'evidence',
-            refExternalId: ref.refExternalId ?? null,
-            name: evidenceName(ref, type),
-            contentType: type,
-            description: ref.description ?? null,
-            collectedAt: ref.collectedAt ?? collectedAt,
-          },
-          bytes,
-        ),
+      const file = fileFromBytes(
+        {
+          externalId: ref.externalId,
+          kind: 'evidence',
+          refExternalId: ref.refExternalId ?? null,
+          name: evidenceName(ref, type),
+          contentType: type,
+          description: ref.description ?? null,
+          collectedAt: ref.collectedAt ?? collectedAt,
+        },
+        bytes,
       );
+      // Admit the file only if it fits the remaining bundle budget; otherwise
+      // defer it (a smaller later file may still fit).
+      if (opts.budget && !opts.budget.tryTake(file.contentBase64.length)) {
+        deferred++;
+        continue;
+      }
+      files.push(file);
     } catch (e) {
       // Off-allowlist host (PolicyViolation) or an HTTP/size error — skip this one
       // artifact, don't fail the whole export.
@@ -171,7 +219,7 @@ export async function fetchEvidenceDocuments(
     }
   }
 
-  return { files, skipped };
+  return { files, skipped, deferred };
 }
 
 /**
@@ -184,35 +232,43 @@ export async function fetchPolicyDocuments(
   http: GuardedHttp,
   policies: BundlePolicy[],
   headers: Record<string, string> = {},
-  opts: { maxBytes?: number } = {},
+  opts: { maxBytes?: number; budget?: SizeBudget } = {},
 ): Promise<PolicyDocResult> {
   const files: BundleFile[] = [];
   let skipped = 0;
+  let deferred = 0;
   const collectedAt = new Date().toISOString();
 
   for (const policy of policies) {
     const url = policy.documentUrl;
     if (!url) continue;
+    if (opts.budget && opts.budget.remaining === 0) {
+      deferred++;
+      continue;
+    }
     try {
       const { bytes, contentType } = await http.getBinary(url, headers, opts.maxBytes);
       if (bytes.byteLength === 0) {
         skipped++;
         continue;
       }
-      files.push(
-        fileFromBytes(
-          {
-            externalId: `${policy.externalId}:document`,
-            kind: 'policy',
-            refExternalId: policy.externalId,
-            name: fileName(policy, contentType),
-            contentType,
-            description: `Policy document for "${policy.name}".`,
-            collectedAt,
-          },
-          bytes,
-        ),
+      const file = fileFromBytes(
+        {
+          externalId: `${policy.externalId}:document`,
+          kind: 'policy',
+          refExternalId: policy.externalId,
+          name: fileName(policy, contentType),
+          contentType,
+          description: `Policy document for "${policy.name}".`,
+          collectedAt,
+        },
+        bytes,
       );
+      if (opts.budget && !opts.budget.tryTake(file.contentBase64.length)) {
+        deferred++;
+        continue;
+      }
+      files.push(file);
     } catch (e) {
       // Off-allowlist host (PolicyViolation) or an HTTP/size error — keep the
       // link, don't fail the whole export over one document.
@@ -221,5 +277,5 @@ export async function fetchPolicyDocuments(
     }
   }
 
-  return { files, skipped };
+  return { files, skipped, deferred };
 }
