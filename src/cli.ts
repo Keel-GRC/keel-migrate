@@ -86,9 +86,9 @@ async function main(): Promise<void> {
       `  risks:    ${bundle.counts.risks}\n` +
       `  people:   ${bundle.counts.people}\n` +
       `  policies: ${bundle.counts.policies}\n` +
-      `  files:    ${bundle.counts.files}  (policy/evidence documents, inlined)\n` +
-      `\nPolicy documents served from the source's official API are downloaded and\n` +
-      `inlined; any served from an off-allowlist host keep a link in the bundle.\n` +
+      `  files:    ${bundle.counts.files}  (policy + evidence documents, inlined)\n` +
+      `\nPolicy and evidence documents served from the source's official API are\n` +
+      `downloaded and inlined; any served from an off-allowlist host keep a link.\n` +
       `Import into your destination — in Keel: Admin → Data & migration → Import.`,
   );
 }
