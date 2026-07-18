@@ -149,15 +149,36 @@ export const vantaAdapter: Adapter = {
  */
 async function collectEvidenceRefs(http: GuardedHttp, token: string): Promise<EvidenceRef[]> {
   const refs: EvidenceRef[] = [];
-  const documents = await listAll<any>(http, token, '/v1/documents');
+  let documents: any[];
+  try {
+    documents = await listAll<any>(http, token, '/v1/documents');
+  } catch (e) {
+    // The guarded client already retries transient 429s; if listing documents
+    // still fails, skip evidence entirely rather than sinking an export whose
+    // registers and policies already succeeded.
+    console.warn(
+      `Skipping evidence: could not list documents (${e instanceof Error ? e.message : String(e)}).`,
+    );
+    return refs;
+  }
+  let skippedDocs = 0;
   for (const doc of documents) {
     const documentId = doc?.id;
     if (!documentId) continue;
-    const uploads = await listAll<any>(
-      http,
-      token,
-      `/v1/documents/${encodeURIComponent(String(documentId))}/uploads`,
-    );
+    let uploads: any[];
+    try {
+      uploads = await listAll<any>(
+        http,
+        token,
+        `/v1/documents/${encodeURIComponent(String(documentId))}/uploads`,
+      );
+    } catch {
+      // One document's uploads listing failed even after retries (sustained rate
+      // limit or a transient error). Skip just this document; a re-run is
+      // idempotent on import, so nothing is lost by continuing.
+      skippedDocs++;
+      continue;
+    }
     for (const up of uploads) {
       const uploadId = up?.id;
       if (!uploadId || up?.deletionDate) continue;
@@ -180,6 +201,12 @@ async function collectEvidenceRefs(http: GuardedHttp, token: string): Promise<Ev
         collectedAt: up?.effectiveDate ?? up?.updatedDate ?? up?.creationDate ?? null,
       });
     }
+  }
+  if (skippedDocs > 0) {
+    console.warn(
+      `${skippedDocs} document(s) had their uploads skipped after repeated rate limits. ` +
+        `Re-run the export to pick them up — imports are idempotent, so already-imported files are not duplicated.`,
+    );
   }
   return refs;
 }

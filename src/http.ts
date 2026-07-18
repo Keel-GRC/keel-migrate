@@ -47,8 +47,49 @@ export class HttpError extends Error {
   }
 }
 
+/** Transient statuses worth retrying: rate limit + gateway/unavailable. */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export class GuardedHttp {
+  // Read requests retry transient failures (esp. Vanta's 429s during a large
+  // evidence pull) with backoff, honoring Retry-After. Bounded so a persistently
+  // rate-limited host eventually surfaces the error instead of hanging.
+  private readonly maxRetries = 6;
+  private readonly maxBackoffMs = 30_000;
+
   constructor(private readonly policy: HttpPolicy) {}
+
+  /** How long to wait before retry `attempt` (0-based): Retry-After, else backoff. */
+  private retryDelayMs(res: Response, attempt: number): number {
+    const ra = res.headers.get('retry-after');
+    if (ra) {
+      const secs = Number(ra);
+      if (Number.isFinite(secs)) return Math.min(Math.max(0, secs) * 1000, this.maxBackoffMs);
+      const when = Date.parse(ra);
+      if (Number.isFinite(when)) return Math.min(Math.max(0, when - Date.now()), this.maxBackoffMs);
+    }
+    // Exponential backoff (1s, 2s, 4s, …) capped, with a little jitter to avoid
+    // synchronized retries hammering the API in lockstep.
+    const base = Math.min(1000 * 2 ** attempt, this.maxBackoffMs);
+    return base + Math.floor(Math.random() * 250);
+  }
+
+  /** GET with bounded retry on transient statuses. Non-retryable errors return immediately. */
+  private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+    let res = await fetch(url, init);
+    for (let attempt = 0; isRetryableStatus(res.status) && attempt < this.maxRetries; attempt++) {
+      const delay = this.retryDelayMs(res, attempt);
+      // Drain the body so the socket is released before we wait and retry.
+      await res.arrayBuffer().catch(() => undefined);
+      await sleep(delay);
+      res = await fetch(url, init);
+    }
+    return res;
+  }
 
   private assertHost(url: string): URL {
     const u = new URL(url);
@@ -66,7 +107,7 @@ export class GuardedHttp {
   /** Read-only GET against an allowlisted host; returns parsed JSON. */
   async getJson<T>(url: string, headers: Record<string, string> = {}): Promise<T> {
     this.assertHost(url);
-    const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json', ...headers } });
+    const res = await this.fetchWithRetry(url, { method: 'GET', headers: { Accept: 'application/json', ...headers } });
     if (!res.ok) {
       throw new HttpError(`GET ${url} → HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`, res.status);
     }
@@ -85,7 +126,7 @@ export class GuardedHttp {
     maxBytes = 25 * 1024 * 1024,
   ): Promise<{ bytes: Uint8Array; contentType: string }> {
     this.assertHost(url);
-    const res = await fetch(url, { method: 'GET', headers });
+    const res = await this.fetchWithRetry(url, { method: 'GET', headers });
     if (!res.ok) {
       throw new HttpError(
         `GET ${url} → HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`,

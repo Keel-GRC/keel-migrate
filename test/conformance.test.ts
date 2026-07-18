@@ -86,6 +86,31 @@ test('fetchEvidenceDocuments skips off-allowlist artifacts without throwing', as
   assert.equal(skipped, 2);
 });
 
+// A rate-limited read (429) is retried and succeeds once the host recovers.
+test('getJson retries a 429 and then succeeds', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.example.com'], tokenEndpoint: null });
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  // Retry-After: 0 keeps the backoff at zero so the test stays fast.
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls === 1) {
+      return new Response('{"error":"Too Many Requests"}', {
+        status: 429,
+        headers: { 'retry-after': '0' },
+      });
+    }
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const out = await http.getJson<{ ok: boolean }>('https://api.example.com/data');
+    assert.equal(out.ok, true);
+    assert.equal(calls, 2, 'should have retried exactly once');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // A declared read-POST path is permitted; anything else POSTed is refused.
 test('postRead permits only declared read-query paths', async () => {
   const http = new GuardedHttp({
