@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuardedHttp, PolicyViolation } from '../src/http.js';
 import { resolvePolicy } from '../src/adapter.js';
+import { fetchEvidenceDocuments } from '../src/files.js';
 import { adapters } from '../src/registry.js';
 
 // The guarded client is the runtime enforcement of "official APIs only".
@@ -72,6 +73,18 @@ for (const [name, adapter] of Object.entries(adapters)) {
     );
   });
 }
+
+// Evidence download inherits the guard: an off-allowlist media URL is skipped
+// (counted), never fetched, and never sinks the export.
+test('fetchEvidenceDocuments skips off-allowlist artifacts without throwing', async () => {
+  const http = new GuardedHttp({ allowedHosts: ['api.vanta.com'], tokenEndpoint: null });
+  const { files, skipped } = await fetchEvidenceDocuments(http, [
+    { externalId: 'doc:up', mediaUrl: 'https://cdn.evil.net/evidence.pdf' },
+    { externalId: 'no-url', mediaUrl: '' },
+  ]);
+  assert.equal(files.length, 0);
+  assert.equal(skipped, 2);
+});
 
 // A declared read-POST path is permitted; anything else POSTed is refused.
 test('postRead permits only declared read-query paths', async () => {

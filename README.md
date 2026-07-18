@@ -75,12 +75,20 @@ Either writes `./out/migration-bundle.json`.
 | Files   | policy/evidence **documents** — the actual bytes, inlined (base64 + sha256) |
 
 Each record keeps the untouched source object under `raw` for a lossless
-round-trip. Policy **documents** are downloaded and inlined into the bundle
-(`records.files`) when the source serves them from the adapter's own
-allowlisted API host — so you take the real PDFs, not links that expire when
-you leave. Documents served from an off-allowlist host (e.g. a signed CDN URL
-the adapter hasn't declared) keep their `documentUrl` link instead of being
-pulled, so the guarded "official APIs only" boundary stays intact.
+round-trip. Both **policy documents** and **evidence documents** are downloaded
+and inlined into the bundle (`records.files`, `kind: 'policy' | 'evidence'`)
+when the source serves the bytes from the adapter's own allowlisted API host —
+so you take the real files, not links that expire when you leave. For Vanta
+that means evidence pulled from the documents API
+(`GET /v1/documents/{id}/uploads/{id}/media`) travels with the bundle. Anything
+served from an off-allowlist host (e.g. a signed CDN URL the adapter hasn't
+declared) keeps its link instead of being pulled, so the guarded "official APIs
+only" boundary stays intact.
+
+One Vanta limitation to note: the policies API exposes only an `app.vanta.com`
+UI link for the approved policy PDF (no downloadable file id), so those specific
+policy PDFs remain a manual export. Evidence documents, which do have a media
+download endpoint, are pulled automatically.
 
 ## Sources
 

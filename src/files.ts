@@ -78,6 +78,103 @@ export interface PolicyDocResult {
 }
 
 /**
+ * A single downloadable evidence artifact the adapter has already resolved from
+ * the source API (a document upload, an evidence file). Neutral shape so the
+ * download/inline logic here stays source-agnostic: the adapter does the
+ * platform-specific listing, this module does the guarded byte pull.
+ */
+export interface EvidenceRef {
+  /** Stable id for the resulting BundleFile, unique across the bundle. */
+  externalId: string;
+  /** Media download URL — must be on the adapter's allowlisted host to be pulled. */
+  mediaUrl: string;
+  /** externalId of the logical document/control this artifact belongs to. */
+  refExternalId?: string | null;
+  /** Preferred file name; a fallback is derived when absent. */
+  name?: string | null;
+  /** Content type hint from the listing; the response header wins when present. */
+  contentType?: string | null;
+  description?: string | null;
+  collectedAt?: string | null;
+}
+
+export interface EvidenceDocResult {
+  files: BundleFile[];
+  /** Artifacts referenced but not pulled (off-allowlist host, HTTP error, empty). */
+  skipped: number;
+}
+
+function evidenceName(ref: EvidenceRef, contentType: string): string {
+  const raw = (ref.name ?? '').trim();
+  if (raw) {
+    // Keep an existing extension; otherwise append one derived from the type.
+    if (/\.[a-z0-9]{1,8}$/i.test(raw)) return raw;
+    const ext = EXT_BY_TYPE[contentType] ?? 'bin';
+    return `${slug(raw)}.${ext}`;
+  }
+  const ext = EXT_BY_TYPE[contentType] ?? 'bin';
+  return `${slug(ref.externalId)}.${ext}`;
+}
+
+/**
+ * Download each evidence artifact whose media URL host is on the adapter's
+ * allowlist, inlining the bytes (base64 + sha256) as kind='evidence' BundleFiles.
+ * `headers` carries the adapter's auth. Mirrors fetchPolicyDocuments: never
+ * throws for one bad artifact — it's counted as skipped and the export continues.
+ */
+export async function fetchEvidenceDocuments(
+  http: GuardedHttp,
+  refs: EvidenceRef[],
+  headers: Record<string, string> = {},
+  opts: { maxBytes?: number } = {},
+): Promise<EvidenceDocResult> {
+  const files: BundleFile[] = [];
+  let skipped = 0;
+  const collectedAt = new Date().toISOString();
+
+  for (const ref of refs) {
+    if (!ref.mediaUrl) {
+      skipped++;
+      continue;
+    }
+    try {
+      const { bytes, contentType } = await http.getBinary(ref.mediaUrl, headers, opts.maxBytes);
+      if (bytes.byteLength === 0) {
+        skipped++;
+        continue;
+      }
+      // Trust the response's content type when it's specific; fall back to the
+      // listing hint for a generic octet-stream.
+      const type =
+        contentType && contentType !== 'application/octet-stream'
+          ? contentType
+          : (ref.contentType ?? contentType);
+      files.push(
+        fileFromBytes(
+          {
+            externalId: ref.externalId,
+            kind: 'evidence',
+            refExternalId: ref.refExternalId ?? null,
+            name: evidenceName(ref, type),
+            contentType: type,
+            description: ref.description ?? null,
+            collectedAt: ref.collectedAt ?? collectedAt,
+          },
+          bytes,
+        ),
+      );
+    } catch (e) {
+      // Off-allowlist host (PolicyViolation) or an HTTP/size error — skip this one
+      // artifact, don't fail the whole export.
+      void (e instanceof PolicyViolation);
+      skipped++;
+    }
+  }
+
+  return { files, skipped };
+}
+
+/**
  * Download each policy's document where its URL host is on the adapter's
  * allowlist. `headers` carries the adapter's auth (e.g. the Bearer token) since
  * document endpoints are authenticated. Never throws for a single bad document —

@@ -14,7 +14,7 @@ import type {
   BundlePolicy,
   Criticality,
 } from '../bundle.js';
-import { fetchPolicyDocuments } from '../files.js';
+import { fetchPolicyDocuments, fetchEvidenceDocuments, type EvidenceRef } from '../files.js';
 
 const API_BASE = 'https://api.vanta.com';
 const TOKEN_ENDPOINT = `${API_BASE}/oauth/token`;
@@ -35,6 +35,18 @@ export const manifest: AdapterManifest = {
     { path: '/v1/risk-scenarios', docUrl: 'https://developer.vanta.com/reference/getriskscenarios' },
     { path: '/v1/people', docUrl: 'https://developer.vanta.com/reference/getpeople' },
     { path: '/v1/policies', docUrl: 'https://developer.vanta.com/reference/getpolicies' },
+    // Evidence documents and their uploaded files. The /media endpoint returns the
+    // raw bytes on api.vanta.com (already allowlisted), so evidence travels with
+    // the bundle rather than as a link that dies when the customer leaves Vanta.
+    { path: '/v1/documents', docUrl: 'https://developer.vanta.com/reference/getdocuments' },
+    {
+      path: '/v1/documents/{documentId}/uploads',
+      docUrl: 'https://developer.vanta.com/reference/getdocumentuploads',
+    },
+    {
+      path: '/v1/documents/{documentId}/uploads/{uploadedFileId}/media',
+      docUrl: 'https://developer.vanta.com/reference/getdocumentuploadmedia',
+    },
   ],
 };
 
@@ -106,22 +118,71 @@ export const vantaAdapter: Adapter = {
       listAll<any>(http, token, '/v1/policies'),
     ]);
 
+    const authHeader = { Authorization: `Bearer ${token}` };
+
     const mappedPolicies = policies.map(mapPolicy);
     // Pull each policy's approved document where it's served from an allowlisted
     // host; off-allowlist documents keep their documentUrl link (see files.ts).
-    const { files } = await fetchPolicyDocuments(http, mappedPolicies, {
-      Authorization: `Bearer ${token}`,
-    });
+    const { files: policyFiles } = await fetchPolicyDocuments(http, mappedPolicies, authHeader);
+
+    // Evidence: list documents, then each document's uploaded files, and pull the
+    // bytes from the /media endpoint (all on api.vanta.com, already allowlisted).
+    const evidenceRefs = await collectEvidenceRefs(http, token);
+    const { files: evidenceFiles } = await fetchEvidenceDocuments(http, evidenceRefs, authHeader);
 
     return {
       vendors: vendors.map(mapVendor),
       risks: risks.map(mapRisk),
       people: people.map(mapPerson),
       policies: mappedPolicies,
-      files,
+      files: [...policyFiles, ...evidenceFiles],
     };
   },
 };
+
+/**
+ * Walk Vanta's documents and their uploads into neutral EvidenceRefs. Each
+ * upload's bytes come from GET /v1/documents/{documentId}/uploads/{id}/media,
+ * which returns the raw file on api.vanta.com. Uploads with a deletionDate are
+ * skipped (they no longer have retrievable media). Missing fields degrade
+ * gracefully so one odd record never sinks the export.
+ */
+async function collectEvidenceRefs(http: GuardedHttp, token: string): Promise<EvidenceRef[]> {
+  const refs: EvidenceRef[] = [];
+  const documents = await listAll<any>(http, token, '/v1/documents');
+  for (const doc of documents) {
+    const documentId = doc?.id;
+    if (!documentId) continue;
+    const uploads = await listAll<any>(
+      http,
+      token,
+      `/v1/documents/${encodeURIComponent(String(documentId))}/uploads`,
+    );
+    for (const up of uploads) {
+      const uploadId = up?.id;
+      if (!uploadId || up?.deletionDate) continue;
+      const title = doc?.title ? String(doc.title) : 'Evidence document';
+      const detail = [
+        `Evidence for "${title}".`,
+        doc?.category ? `Category: ${doc.category}.` : '',
+        doc?.isSensitive ? 'Marked sensitive in Vanta.' : '',
+        up?.description ? String(up.description) : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+      refs.push({
+        externalId: `${documentId}:${uploadId}`,
+        refExternalId: String(documentId),
+        mediaUrl: `${API_BASE}/v1/documents/${encodeURIComponent(String(documentId))}/uploads/${encodeURIComponent(String(uploadId))}/media`,
+        name: up?.fileName ?? up?.title ?? title,
+        contentType: up?.mimeType ?? null,
+        description: detail || null,
+        collectedAt: up?.effectiveDate ?? up?.updatedDate ?? up?.creationDate ?? null,
+      });
+    }
+  }
+  return refs;
+}
 
 function mapVendor(v: any): BundleVendor {
   return {
