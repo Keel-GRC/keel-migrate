@@ -30,8 +30,10 @@ Usage:
   keel-migrate export --source <name> --out <dir>
 
 Options:
-  --source   Source platform to export from. Available: ${Object.keys(adapters).join(', ')}
-  --out      Output directory for the bundle (default: ./keel-migrate-out)
+  --source          Source platform to export from. Available: ${Object.keys(adapters).join(', ')}
+  --out             Output directory for the bundle (default: ./keel-migrate-out)
+  --max-bundle-mb   Cap on total inlined document bytes (default: 45). Documents
+                    beyond the cap are left out so the bundle stays importable.
 
 Credentials come from environment variables declared by the source adapter.
 For Vanta: export VANTA_CLIENT_ID and VANTA_CLIENT_SECRET (read-only OAuth client).
@@ -47,6 +49,7 @@ async function main(): Promise<void> {
     options: {
       source: { type: 'string' },
       out: { type: 'string' },
+      'max-bundle-mb': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -72,16 +75,37 @@ async function main(): Promise<void> {
   const outDir = values.out || './keel-migrate-out';
   const http = new GuardedHttp(resolvePolicy(adapter.manifest, process.env));
 
+  // Bundle size cap (inlined document bytes). Guard against a nonsense value.
+  let maxInlineBytes: number | undefined;
+  if (values['max-bundle-mb'] != null) {
+    const mb = Number(values['max-bundle-mb']);
+    if (!Number.isFinite(mb) || mb <= 0) fail('--max-bundle-mb must be a positive number.');
+    maxInlineBytes = Math.round(mb * 1024 * 1024);
+  }
+
   console.log(`Exporting from ${adapter.manifest.displayName} (read-only, official API)…`);
-  const records = await adapter.export(creds, http);
+  const records = await adapter.export(creds, http, { maxInlineBytes });
   const bundle = makeBundle(sourceName, VERSION, records, new Date().toISOString());
 
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, 'migration-bundle.json');
-  writeFileSync(outPath, JSON.stringify(bundle, null, 2));
+  // Serialize defensively: the adapter caps inlined bytes so this stays well
+  // under V8's max string length, but if a caller raises --max-bundle-mb past
+  // that limit, surface a clear message instead of a raw "Invalid string length".
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(bundle, null, 2);
+  } catch {
+    fail(
+      'The bundle is too large to write as a single JSON file (it exceeded the runtime string ' +
+        'limit). Re-run with a smaller --max-bundle-mb so fewer documents are inlined.',
+    );
+  }
+  writeFileSync(outPath, serialized);
+  const sizeMb = (Buffer.byteLength(serialized) / (1024 * 1024)).toFixed(1);
 
   console.log(
-    `\nDone. Wrote ${outPath}\n` +
+    `\nDone. Wrote ${outPath} (${sizeMb} MB)\n` +
       `  vendors:  ${bundle.counts.vendors}\n` +
       `  risks:    ${bundle.counts.risks}\n` +
       `  people:   ${bundle.counts.people}\n` +
