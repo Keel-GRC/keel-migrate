@@ -90,12 +90,20 @@ UI link for the approved policy PDF (no downloadable file id), so those specific
 policy PDFs remain a manual export. Evidence documents, which do have a media
 download endpoint, are pulled automatically.
 
-Because every document is inlined as base64 into a single JSON file that the
-destination reads whole, the total inlined bytes are capped (default **45 MB**,
-set with `--max-bundle-mb`). This keeps the bundle serializable and importable;
-documents beyond the cap are left out and reported at the end of the run. If you
-have a large evidence library, raise the cap or export in stages. (A streamed,
-multi-part transport for very large evidence sets is on the roadmap.)
+Documents are inlined as base64, and because the destination reads each bundle
+file whole (in a memory-bounded worker), a large evidence library is **split
+across multiple importable bundle files** rather than dropped. Each file is kept
+under a per-file cap (default **45 MB**, set with `--max-bundle-mb`):
+
+- A small export stays a single `migration-bundle.json` (unchanged).
+- A large one also writes `migration-bundle-002.json`, `migration-bundle-003.json`,
+  and so on. Registers (vendors/risks/people/policies) ride on the first file;
+  the rest carry the remaining evidence. Every shard is itself a valid bundle.
+
+To import a multi-file export, import **each** file into your destination, in any
+order. Re-runs are idempotent (records are matched by source id), so nothing is
+duplicated. (A direct-to-storage streaming upload for very large sets, so bytes
+skip the bundle entirely, is on the roadmap.)
 
 ## Sources
 

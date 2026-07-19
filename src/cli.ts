@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { GuardedHttp } from './http.js';
 import { resolvePolicy } from './adapter.js';
-import { makeBundle } from './bundle.js';
+import { makeBundle, shardBundle } from './bundle.js';
 import { adapters } from './registry.js';
 
 const VERSION = '0.1.0';
@@ -32,8 +32,9 @@ Usage:
 Options:
   --source          Source platform to export from. Available: ${Object.keys(adapters).join(', ')}
   --out             Output directory for the bundle (default: ./keel-migrate-out)
-  --max-bundle-mb   Cap on total inlined document bytes (default: 45). Documents
-                    beyond the cap are left out so the bundle stays importable.
+  --max-bundle-mb   Per-file size cap in MB (default: 45). A large export is split
+                    into multiple importable bundle files under this size; nothing
+                    is dropped. Import each file into your destination.
 
 Credentials come from environment variables declared by the source adapter.
 For Vanta: export VANTA_CLIENT_ID and VANTA_CLIENT_SECRET (read-only OAuth client).
@@ -75,37 +76,50 @@ async function main(): Promise<void> {
   const outDir = values.out || './keel-migrate-out';
   const http = new GuardedHttp(resolvePolicy(adapter.manifest, process.env));
 
-  // Bundle size cap (inlined document bytes). Guard against a nonsense value.
-  let maxInlineBytes: number | undefined;
+  // Per-shard size cap for inlined document bytes. Each output file is kept under
+  // this so it stays importable through the destination's memory-bounded worker.
+  let maxShardBytes = 45 * 1024 * 1024;
   if (values['max-bundle-mb'] != null) {
     const mb = Number(values['max-bundle-mb']);
     if (!Number.isFinite(mb) || mb <= 0) fail('--max-bundle-mb must be a positive number.');
-    maxInlineBytes = Math.round(mb * 1024 * 1024);
+    maxShardBytes = Math.round(mb * 1024 * 1024);
   }
 
   console.log(`Exporting from ${adapter.manifest.displayName} (read-only, official API)…`);
-  const records = await adapter.export(creds, http, { maxInlineBytes });
+  const records = await adapter.export(creds, http);
   const bundle = makeBundle(sourceName, VERSION, records, new Date().toISOString());
 
-  mkdirSync(outDir, { recursive: true });
-  const outPath = join(outDir, 'migration-bundle.json');
-  // Serialize defensively: the adapter caps inlined bytes so this stays well
-  // under V8's max string length, but if a caller raises --max-bundle-mb past
-  // that limit, surface a clear message instead of a raw "Invalid string length".
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(bundle, null, 2);
-  } catch {
-    fail(
-      'The bundle is too large to write as a single JSON file (it exceeded the runtime string ' +
-        'limit). Re-run with a smaller --max-bundle-mb so fewer documents are inlined.',
-    );
-  }
-  writeFileSync(outPath, serialized);
-  const sizeMb = (Buffer.byteLength(serialized) / (1024 * 1024)).toFixed(1);
+  // Split into independently-importable shards so a large evidence library moves
+  // in full without any single file exceeding the import limit. Small exports
+  // stay a single migration-bundle.json.
+  const shards = shardBundle(bundle, maxShardBytes);
 
+  mkdirSync(outDir, { recursive: true });
+  const written: { path: string; sizeMb: string; files: number }[] = [];
+  for (let i = 0; i < shards.length; i++) {
+    const name = i === 0 ? 'migration-bundle.json' : `migration-bundle-${String(i + 1).padStart(3, '0')}.json`;
+    const outPath = join(outDir, name);
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(shards[i], null, 2);
+    } catch {
+      fail(
+        'A shard was too large to write as a single JSON file (it exceeded the runtime string ' +
+          'limit). Re-run with a smaller --max-bundle-mb.',
+      );
+    }
+    writeFileSync(outPath, serialized);
+    written.push({
+      path: outPath,
+      sizeMb: (Buffer.byteLength(serialized) / (1024 * 1024)).toFixed(1),
+      files: shards[i]!.counts.files,
+    });
+  }
+
+  const fileList = written.map((w) => `  ${w.path} (${w.sizeMb} MB, ${w.files} files)`).join('\n');
+  const multi = written.length > 1;
   console.log(
-    `\nDone. Wrote ${outPath} (${sizeMb} MB)\n` +
+    `\nDone. Wrote ${written.length} bundle file${multi ? 's' : ''}:\n${fileList}\n\n` +
       `  vendors:  ${bundle.counts.vendors}\n` +
       `  risks:    ${bundle.counts.risks}\n` +
       `  people:   ${bundle.counts.people}\n` +
@@ -113,6 +127,10 @@ async function main(): Promise<void> {
       `  files:    ${bundle.counts.files}  (policy + evidence documents, inlined)\n` +
       `\nPolicy and evidence documents served from the source's official API are\n` +
       `downloaded and inlined; any served from an off-allowlist host keep a link.\n` +
+      (multi
+        ? `\nThis export was split into ${written.length} files to stay under the import size\n` +
+          `limit. Import EACH file into your destination (any order; re-runs are idempotent).\n`
+        : '') +
       `Import into your destination — in Keel: Admin → Data & migration → Import.`,
   );
 }

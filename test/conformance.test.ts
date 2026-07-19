@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { GuardedHttp, PolicyViolation } from '../src/http.js';
 import { resolvePolicy } from '../src/adapter.js';
 import { fetchEvidenceDocuments, SizeBudget } from '../src/files.js';
+import { makeBundle, shardBundle, type BundleFile } from '../src/bundle.js';
 import { adapters } from '../src/registry.js';
 
 // The guarded client is the runtime enforcement of "official APIs only".
@@ -84,6 +85,44 @@ test('fetchEvidenceDocuments skips off-allowlist artifacts without throwing', as
   ]);
   assert.equal(files.length, 0);
   assert.equal(skipped, 2);
+});
+
+// Sharding splits a large evidence set across importable bundle files, dropping
+// nothing, while a small export stays a single bundle.
+test('shardBundle splits files across shards and preserves every file', () => {
+  const mkFile = (i: number, kb: number): BundleFile => ({
+    externalId: `f${i}`,
+    kind: 'evidence',
+    refExternalId: null,
+    name: `f${i}.bin`,
+    contentType: 'application/octet-stream',
+    sizeBytes: kb * 1024,
+    sha256: 'x'.repeat(64),
+    contentBase64: 'A'.repeat(kb * 1024), // ~kb KB of base64 chars
+  });
+  const files = Array.from({ length: 10 }, (_, i) => mkFile(i, 100)); // 10 x ~100 KB
+  const bundle = makeBundle(
+    'vanta',
+    '0.0.0',
+    { vendors: [{ externalId: 'v1', name: 'V' }], risks: [], people: [], policies: [], files },
+    '2026-01-01T00:00:00.000Z',
+  );
+
+  // Cap at ~250 KB -> multiple shards.
+  const shards = shardBundle(bundle, 250 * 1024);
+  assert.ok(shards.length > 1, 'large export splits into multiple shards');
+  // Registers ride only on shard 0; later shards have empty registers.
+  assert.equal(shards[0]!.records.vendors.length, 1);
+  for (let i = 1; i < shards.length; i++) assert.equal(shards[i]!.records.vendors.length, 0);
+  // Every file appears exactly once across all shards.
+  const ids = shards.flatMap((s) => s.records.files.map((f) => f.externalId)).sort();
+  assert.deepEqual(ids, files.map((f) => f.externalId).sort());
+  // Each shard is a valid v1 bundle.
+  for (const s of shards) assert.equal(s.bundleVersion, 1);
+
+  // A small export stays one bundle.
+  const one = shardBundle(makeBundle('vanta', '0.0.0', { vendors: [], risks: [], people: [], policies: [], files: [mkFile(0, 10)] }, '2026-01-01T00:00:00.000Z'), 45 * 1024 * 1024);
+  assert.equal(one.length, 1);
 });
 
 // A rate-limited read (429) is retried and succeeds once the host recovers.
