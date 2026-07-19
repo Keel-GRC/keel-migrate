@@ -32,9 +32,11 @@ Usage:
 Options:
   --source          Source platform to export from. Available: ${Object.keys(adapters).join(', ')}
   --out             Output directory for the bundle (default: ./keel-migrate-out)
-  --max-bundle-mb   Per-file size cap in MB (default: 45). A large export is split
+  --max-bundle-mb   Per-file size cap in MB (default: 10). A large export is split
                     into multiple importable bundle files under this size; nothing
-                    is dropped. Import each file into your destination.
+                    is dropped. Import each file into your destination. The default
+                    is sized to import cleanly through a memory-bounded worker;
+                    raise it only if your destination can take larger uploads.
 
 Credentials come from environment variables declared by the source adapter.
 For Vanta: export VANTA_CLIENT_ID and VANTA_CLIENT_SECRET (read-only OAuth client).
@@ -78,7 +80,10 @@ async function main(): Promise<void> {
 
   // Per-shard size cap for inlined document bytes. Each output file is kept under
   // this so it stays importable through the destination's memory-bounded worker.
-  let maxShardBytes = 45 * 1024 * 1024;
+  // 10 MB is a conservative default: a bundle is read whole and JSON-parsed in the
+  // importer's Worker (peak memory ~2x the file), so larger shards risk an
+  // out-of-memory crash that surfaces as a generic "temporary error" on import.
+  let maxShardBytes = 10 * 1024 * 1024;
   if (values['max-bundle-mb'] != null) {
     const mb = Number(values['max-bundle-mb']);
     if (!Number.isFinite(mb) || mb <= 0) fail('--max-bundle-mb must be a positive number.');
