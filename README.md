@@ -93,7 +93,7 @@ download endpoint, are pulled automatically.
 Documents are inlined as base64, and because the destination reads each bundle
 file whole (in a memory-bounded worker), a large evidence library is **split
 across multiple importable bundle files** rather than dropped. Each file is kept
-under a per-file cap (default **45 MB**, set with `--max-bundle-mb`):
+under a per-file cap (default **10 MB**, set with `--max-bundle-mb`):
 
 - A small export stays a single `migration-bundle.json` (unchanged).
 - A large one also writes `migration-bundle-002.json`, `migration-bundle-003.json`,
