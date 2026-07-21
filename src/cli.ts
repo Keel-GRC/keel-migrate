@@ -91,7 +91,10 @@ async function main(): Promise<void> {
   }
 
   console.log(`Exporting from ${adapter.manifest.displayName} (read-only, official API)…`);
-  const records = await adapter.export(creds, http);
+  // Pass the per-shard cap so adapters that inline documents skip any single file
+  // too big to fit an importable shard (it can't be split), rather than emitting
+  // an unimportable lone shard. A large *library* still shards across many files.
+  const records = await adapter.export(creds, http, { maxInlineBytes: maxShardBytes });
   const bundle = makeBundle(sourceName, VERSION, records, new Date().toISOString());
 
   // Split into independently-importable shards so a large evidence library moves
