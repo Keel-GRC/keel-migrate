@@ -105,6 +105,12 @@ order. Re-runs are idempotent (records are matched by source id), so nothing is
 duplicated. (A direct-to-storage streaming upload for very large sets, so bytes
 skip the bundle entirely, is on the roadmap.)
 
+A single document larger than the per-file cap can't be split across shards (its
+base64 lives in one JSON string), so it is **skipped and reported** rather than
+written as a bundle no importer would accept: the record keeps its metadata (and,
+for policies, its document link). Raise `--max-bundle-mb` to include such files,
+keeping in mind the destination's own import limit.
+
 ## Sources
 
 - ✅ **Vanta** (`--source vanta`) — OAuth client-credentials, read-only

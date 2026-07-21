@@ -72,43 +72,37 @@ export function fileFromBytes(
 }
 
 /**
- * Default ceiling on the TOTAL inlined file bytes (base64) across a bundle.
- * Evidence is inlined as base64 in one JSON file, and that file is later read
- * whole and JSON-parsed by the destination importer (Keel's runs in a
- * memory-bounded Worker). Left unbounded, a large evidence library both
- * overflows V8's ~512 MB max string length when the bundle is serialized AND
- * produces a bundle too big to import. So we cap the inlined total; documents
- * beyond the cap keep their metadata but are counted as deferred, and a re-run
- * or a higher --max-bundle-mb picks them up. 45 MB (encoded) keeps the bundle
- * importable with headroom.
+ * Options shared by the document/evidence download passes.
+ *
+ * A bundle is later sharded (see `shardBundle`) so a large *library* moves in
+ * full across several importable files. What sharding cannot do is split ONE
+ * file across shards: base64 lives in a single JSON string. So a single document
+ * whose inlined (base64) size exceeds the per-shard cap would become a lone shard
+ * that still busts the destination importer's limit and gets rejected, taking any
+ * co-resident files down with it. To avoid that, `maxInlineBytes` (the same cap
+ * the CLI shards to) makes the download pass skip and report any single file too
+ * big to fit a shard, keeping its metadata/link as the fallback. `maxBytes` bounds
+ * the raw download itself (memory safety) and defaults to `getBinary`'s own ceiling;
+ * the per-shard `maxInlineBytes` decision is made on the base64 length AFTER
+ * download, so an unshippable file is categorized as `oversized` rather than lumped
+ * in with transport `skipped`.
  */
-export const DEFAULT_MAX_INLINE_BYTES = 45 * 1024 * 1024;
-
-/**
- * Running budget for total inlined (base64) bytes. Shared across the policy and
- * evidence passes so the whole bundle stays under one ceiling. `tryTake` admits
- * a file only if it fits, so smaller files can still land after a big one is
- * turned away.
- */
-export class SizeBudget {
-  private used = 0;
-  constructor(private readonly maxBytes: number) {}
-  get remaining(): number {
-    return Math.max(0, this.maxBytes - this.used);
-  }
-  tryTake(bytes: number): boolean {
-    if (this.used + bytes > this.maxBytes) return false;
-    this.used += bytes;
-    return true;
-  }
+export interface InlineOpts {
+  maxBytes?: number;
+  maxInlineBytes?: number;
 }
 
 export interface PolicyDocResult {
   files: BundleFile[];
-  /** Documents referenced but not pulled (off-allowlist host, HTTP error, too large). */
+  /** Documents referenced but not pulled (off-allowlist host, HTTP error, empty). */
   skipped: number;
-  /** Documents downloaded but deferred because the bundle size budget was reached. */
-  deferred: number;
+  /** Documents pulled but skipped because one file alone exceeds the per-shard cap. */
+  oversized: number;
+}
+
+/** True when a built file's inlined bytes exceed the per-shard cap (if one is set). */
+function isOversized(file: BundleFile, opts: InlineOpts): boolean {
+  return opts.maxInlineBytes != null && file.contentBase64.length > opts.maxInlineBytes;
 }
 
 /**
@@ -136,8 +130,8 @@ export interface EvidenceDocResult {
   files: BundleFile[];
   /** Artifacts referenced but not pulled (off-allowlist host, HTTP error, empty). */
   skipped: number;
-  /** Artifacts downloaded but deferred because the bundle size budget was reached. */
-  deferred: number;
+  /** Artifacts pulled but skipped because one file alone exceeds the per-shard cap. */
+  oversized: number;
 }
 
 function evidenceName(ref: EvidenceRef, contentType: string): string {
@@ -162,22 +156,16 @@ export async function fetchEvidenceDocuments(
   http: GuardedHttp,
   refs: EvidenceRef[],
   headers: Record<string, string> = {},
-  opts: { maxBytes?: number; budget?: SizeBudget } = {},
+  opts: InlineOpts = {},
 ): Promise<EvidenceDocResult> {
   const files: BundleFile[] = [];
   let skipped = 0;
-  let deferred = 0;
+  let oversized = 0;
   const collectedAt = new Date().toISOString();
 
   for (const ref of refs) {
     if (!ref.mediaUrl) {
       skipped++;
-      continue;
-    }
-    // Stop downloading once the bundle budget is exhausted: further bytes would
-    // only be discarded, and pulling them wastes API calls / rate limit.
-    if (opts.budget && opts.budget.remaining === 0) {
-      deferred++;
       continue;
     }
     try {
@@ -204,10 +192,14 @@ export async function fetchEvidenceDocuments(
         },
         bytes,
       );
-      // Admit the file only if it fits the remaining bundle budget; otherwise
-      // defer it (a smaller later file may still fit).
-      if (opts.budget && !opts.budget.tryTake(file.contentBase64.length)) {
-        deferred++;
+      // A single file that can't fit a shard would produce an unimportable lone
+      // shard, so skip and report it rather than admit it.
+      if (isOversized(file, opts)) {
+        console.warn(
+          `Skipping evidence "${file.name}" (${(file.sizeBytes / (1024 * 1024)).toFixed(1)} MB): ` +
+            'larger than the per-file import cap. Raise --max-bundle-mb to include it.',
+        );
+        oversized++;
         continue;
       }
       files.push(file);
@@ -219,7 +211,7 @@ export async function fetchEvidenceDocuments(
     }
   }
 
-  return { files, skipped, deferred };
+  return { files, skipped, oversized };
 }
 
 /**
@@ -232,20 +224,16 @@ export async function fetchPolicyDocuments(
   http: GuardedHttp,
   policies: BundlePolicy[],
   headers: Record<string, string> = {},
-  opts: { maxBytes?: number; budget?: SizeBudget } = {},
+  opts: InlineOpts = {},
 ): Promise<PolicyDocResult> {
   const files: BundleFile[] = [];
   let skipped = 0;
-  let deferred = 0;
+  let oversized = 0;
   const collectedAt = new Date().toISOString();
 
   for (const policy of policies) {
     const url = policy.documentUrl;
     if (!url) continue;
-    if (opts.budget && opts.budget.remaining === 0) {
-      deferred++;
-      continue;
-    }
     try {
       const { bytes, contentType } = await http.getBinary(url, headers, opts.maxBytes);
       if (bytes.byteLength === 0) {
@@ -264,8 +252,14 @@ export async function fetchPolicyDocuments(
         },
         bytes,
       );
-      if (opts.budget && !opts.budget.tryTake(file.contentBase64.length)) {
-        deferred++;
+      // Too big for a shard: keep the policy's documentUrl link as the fallback
+      // rather than emit an unimportable shard.
+      if (isOversized(file, opts)) {
+        console.warn(
+          `Skipping policy document "${file.name}" (${(file.sizeBytes / (1024 * 1024)).toFixed(1)} MB): ` +
+            'larger than the per-file import cap. The policy keeps its document link.',
+        );
+        oversized++;
         continue;
       }
       files.push(file);
@@ -277,5 +271,5 @@ export async function fetchPolicyDocuments(
     }
   }
 
-  return { files, skipped, deferred };
+  return { files, skipped, oversized };
 }

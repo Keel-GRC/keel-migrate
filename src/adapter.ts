@@ -69,9 +69,12 @@ export interface AdapterManifest {
 /** Options passed to an adapter's export (from the CLI). */
 export interface ExportOptions {
   /**
-   * Ceiling on total inlined file bytes (base64) for the bundle. Adapters that
-   * inline documents cap their downloads to keep the bundle serializable and
-   * importable. Omitted -> the adapter's default.
+   * Per-file ceiling on inlined (base64) bytes, set by the CLI to the same
+   * `--max-bundle-mb` cap it later shards to. Adapters that inline documents skip
+   * and report any single file larger than this: the library as a whole shards
+   * across many bundle files, but one file cannot be split across shards, so an
+   * over-cap file would otherwise become an unimportable lone shard. Omitted ->
+   * the adapter inlines without a per-file cap (small/local exports).
    */
   maxInlineBytes?: number;
 }

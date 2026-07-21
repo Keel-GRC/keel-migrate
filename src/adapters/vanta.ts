@@ -100,7 +100,7 @@ function toCriticality(level: unknown): Criticality | null {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const vantaAdapter: Adapter = {
   manifest,
-  async export(creds, http): Promise<BundleRecords> {
+  async export(creds, http, opts = {}): Promise<BundleRecords> {
     const token = (
       await http.postToken<{ access_token?: string }>(TOKEN_ENDPOINT, {
         client_id: creds.VANTA_CLIENT_ID,
@@ -123,21 +123,32 @@ export const vantaAdapter: Adapter = {
     const mappedPolicies = policies.map(mapPolicy);
     // Pull every policy's approved document and every evidence upload where it's
     // served from an allowlisted host; off-allowlist documents keep their link.
-    // No size budget here: the CLI shards the result across multiple importable
-    // bundle files, so nothing is dropped for being large.
-    const { files: policyFiles } = await fetchPolicyDocuments(http, mappedPolicies, authHeader);
+    // The CLI shards the whole result across importable bundle files, so a large
+    // *library* is never dropped. A single file too big for one shard can't be
+    // split, though, so `maxInlineBytes` (the shard cap) makes the download pass
+    // skip and report those, keeping their metadata/link.
+    const inline = { maxInlineBytes: opts.maxInlineBytes };
+    const policyDocs = await fetchPolicyDocuments(http, mappedPolicies, authHeader, inline);
 
     // Evidence: list documents, then each document's uploaded files, and pull the
     // bytes from the /media endpoint (all on api.vanta.com, already allowlisted).
     const evidenceRefs = await collectEvidenceRefs(http, token);
-    const { files: evidenceFiles } = await fetchEvidenceDocuments(http, evidenceRefs, authHeader);
+    const evidenceDocs = await fetchEvidenceDocuments(http, evidenceRefs, authHeader, inline);
+
+    const oversized = policyDocs.oversized + evidenceDocs.oversized;
+    if (oversized > 0) {
+      console.warn(
+        `${oversized} document${oversized === 1 ? '' : 's'} exceeded the per-file import cap and ` +
+          'were left as links. Raise --max-bundle-mb to include them.',
+      );
+    }
 
     return {
       vendors: vendors.map(mapVendor),
       risks: risks.map(mapRisk),
       people: people.map(mapPerson),
       policies: mappedPolicies,
-      files: [...policyFiles, ...evidenceFiles],
+      files: [...policyDocs.files, ...evidenceDocs.files],
     };
   },
 };
