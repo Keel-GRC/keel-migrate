@@ -1,0 +1,114 @@
+name: Publish keel-migrate
+
+# Publishes the `keel-migrate` npm package from this repository.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS ONE USES A TOKEN AND keelgrc-mcp DOES NOT
+#
+# The sibling repo publishes with npm OIDC "trusted publishing" — no stored
+# secret at all. That is the better mechanism and this repo should end up there
+# too. It cannot start there.
+#
+# A trusted publisher is configured on a package's own settings page on
+# npmjs.com. `keel-migrate` has never been published (registry.npmjs.org returns
+# 404 for it, checked 2026-08-12), so that page does not exist yet and there is
+# nowhere to add the connection. npm's own docs describe the setup as "navigate
+# to your package settings", which quietly assumes a package that already
+# exists.
+#
+# So the first publish needs a token, and exactly one thing changes afterwards:
+#
+#   AFTER THE FIRST SUCCESSFUL RUN
+#     1. npmjs.com -> the keel-migrate package -> Settings -> Trusted Publisher,
+#        GitHub Actions, Organization `Keel-GRC`, Repository `keel-migrate`,
+#        Workflow `publish.yml`, Environment blank.
+#     2. In this file: delete the `env: NODE_AUTH_TOKEN` block on the publish
+#        step, and add `id-token: write` to `permissions` below.
+#     3. Delete the NPM_TOKEN secret from the repository AND revoke it on
+#        npmjs.com. Both — removing the repo secret leaves a live token in the
+#        world.
+#
+# Until step 3 is done, a token that can publish under Keel's name is sitting in
+# this repository's secrets. That is the whole reason the switch is written down
+# here rather than left as something to remember.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THE JOB IS LOCKED DOWN
+#
+# This job holds credentials that can publish a package under Keel's name to a
+# registry that other people's machines install from. Anything that executes
+# here executes with that authority.
+#
+# Hence: a committed lockfile with `npm ci` (which refuses to deviate from it),
+# `--ignore-scripts` so no dependency's install hook runs in a job that can
+# publish, a pinned npm rather than `@latest`, and an audit that FAILS the job
+# rather than a flag that suppresses it. Keel's dependency non-negotiable exists
+# because a package flagged as containing malicious code once executed in a Keel
+# build (astro@7.1.0, GHSA-hpcx-pg6g-x697); this workflow is the one that would
+# pass that on to a user.
+#
+# TO PUBLISH
+#   1. Bump "version" in package.json — npm rejects re-publishing a version.
+#   2. Commit the updated package-lock.json with it, or `npm ci` fails here.
+#   3. Actions tab -> "Publish keel-migrate" -> Run workflow. Or publish a
+#      GitHub Release. No terminal, no 2FA code.
+
+on:
+  workflow_dispatch: {}
+  release:
+    types: [published]
+
+concurrency:
+  group: publish-keel-migrate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # id-token: write   <- add this when moving to trusted publishing (see above)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Pinned, not `@latest`: `@latest` hands this job's publishing authority to
+      # whatever npm published most recently. Also what trusted publishing will
+      # need (>= 11.5.1) when this repo moves to it.
+      - name: Install the pinned npm
+        run: npm install -g --ignore-scripts npm@12.0.2
+
+      - name: Install (locked, no install scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Audit
+        run: npm audit --audit-level=high
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # keel-migrate reads a customer's live GRC platform with their credentials.
+      # A release whose adapters have stopped agreeing with their manifests is
+      # not something to find out about after it is on the registry.
+      - name: Test
+        run: npm test
+
+      # Proves the published entry point actually runs. `files` ships only
+      # `dist`, so a build that silently emitted nothing, or a `bin` pointing at
+      # a path that does not exist, produces an installable package that dies on
+      # first use — and nothing above would catch it.
+      - name: Smoke the built CLI
+        run: node dist/cli.js --help
+
+      - name: Publish to npm
+        run: npm publish --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
