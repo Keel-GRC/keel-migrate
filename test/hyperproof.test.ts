@@ -41,6 +41,20 @@ function stubHttp(
   return { http, urls };
 }
 
+/**
+ * True when a recorded request URL is exactly this path on Hyperproof's API host.
+ *
+ * Compares the parsed `origin` and `pathname` rather than searching the URL for a
+ * substring. A substring check is the classic incomplete-sanitization bug: it also
+ * matches `https://evil.test/?next=https://api.hyperproof.app/v1/proof`, so a test
+ * written that way would keep passing if the adapter started calling the wrong
+ * host. Query strings are deliberately ignored — pagination cursors vary per call.
+ */
+function matches(recordedUrl: string, pathname: string): boolean {
+  const u = new URL(recordedUrl);
+  return u.origin === 'https://api.hyperproof.app' && u.pathname === pathname;
+}
+
 /** Every endpoint empty, so a test can override just the one it cares about. */
 function emptyDefaults(u: URL): unknown {
   if (u.pathname === '/v1/proof') return { data: [] };
@@ -304,10 +318,14 @@ test('hyperproof: follows the proof nextToken cursor and downloads the bytes', a
   assert.ok(r.files[0]!.sizeBytes > 0);
   assert.match(r.files[0]!.sha256, /^[0-9a-f]{64}$/);
   assert.match(r.files[0]!.description ?? '', /Source: localComputer/);
-  // Exactly the documented contents path is used for the download.
-  assert.ok(urls.includes('https://api.hyperproof.app/v1/proof/pf-1/contents'));
+  // Exactly the documented contents path is used for the download — asserted on
+  // the parsed origin and pathname, never on a substring of the URL. (A substring
+  // test would pass for `https://evil.test/?x=https://api.hyperproof.app/...`,
+  // which is why CodeQL objects to the shape even where, as here, the receiver is
+  // an array and the comparison is already exact.)
+  assert.ok(urls.some((u) => matches(u, '/v1/proof/pf-1/contents')));
   // Two list pages, and no third once the cursor is exhausted.
-  assert.equal(urls.filter((u) => u.includes('/v1/proof?')).length, 2);
+  assert.equal(urls.filter((u) => matches(u, '/v1/proof')).length, 2);
 });
 
 test('hyperproof: stops and warns when the proof cursor stops advancing', async () => {
