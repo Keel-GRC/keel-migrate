@@ -3,34 +3,28 @@ name: Publish keel-migrate
 # Publishes the `keel-migrate` npm package from this repository.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# WHY THIS ONE USES A TOKEN AND keelgrc-mcp DOES NOT
+# NO STORED SECRET
 #
-# The sibling repo publishes with npm OIDC "trusted publishing" — no stored
-# secret at all. That is the better mechanism and this repo should end up there
-# too. It cannot start there.
+# This publishes with npm OIDC "trusted publishing": GitHub Actions authenticates
+# to npm directly, so there is no NPM_TOKEN anywhere and no 2FA code to enter.
+# Each release also carries a build provenance attestation, which a token publish
+# cannot produce — `npm audit signatures` verifies it downstream.
 #
-# A trusted publisher is configured on a package's own settings page on
-# npmjs.com. `keel-migrate` has never been published (registry.npmjs.org returns
-# 404 for it, checked 2026-08-12), so that page does not exist yet and there is
-# nowhere to add the connection. npm's own docs describe the setup as "navigate
-# to your package settings", which quietly assumes a package that already
-# exists.
+# It could not start this way. A trusted publisher is configured on a package's
+# own settings page, and keel-migrate had never been published, so the page did
+# not exist. 0.1.0 went out on 2026-08-12 with a short-lived token; that token is
+# gone and this is the permanent arrangement.
 #
-# So the first publish needs a token, and exactly one thing changes afterwards:
+# The npm-side configuration this depends on (already done):
+#   npmjs.com -> keel-migrate -> Settings -> Trusted Publisher -> GitHub Actions
+#     Organization or user: Keel-GRC
+#     Repository:           keel-migrate
+#     Workflow filename:    publish.yml
+#     Environment:          (blank)
 #
-#   AFTER THE FIRST SUCCESSFUL RUN
-#     1. npmjs.com -> the keel-migrate package -> Settings -> Trusted Publisher,
-#        GitHub Actions, Organization `Keel-GRC`, Repository `keel-migrate`,
-#        Workflow `publish.yml`, Environment blank.
-#     2. In this file: delete the `env: NODE_AUTH_TOKEN` block on the publish
-#        step, and add `id-token: write` to `permissions` below.
-#     3. Delete the NPM_TOKEN secret from the repository AND revoke it on
-#        npmjs.com. Both — removing the repo secret leaves a live token in the
-#        world.
-#
-# Until step 3 is done, a token that can publish under Keel's name is sitting in
-# this repository's secrets. That is the whole reason the switch is written down
-# here rather than left as something to remember.
+# If a publish ever fails with a 404 or ENEEDAUTH, that configuration is the first
+# thing to check — npm reports a missing trusted publisher as "not found" rather
+# than as an authorization error, which reads as though the package is gone.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # WHY THE JOB IS LOCKED DOWN
@@ -51,7 +45,7 @@ name: Publish keel-migrate
 #   1. Bump "version" in package.json — npm rejects re-publishing a version.
 #   2. Commit the updated package-lock.json with it, or `npm ci` fails here.
 #   3. Actions tab -> "Publish keel-migrate" -> Run workflow. Or publish a
-#      GitHub Release. No terminal, no 2FA code.
+#      GitHub Release. No terminal, no 2FA code, no secret.
 
 on:
   workflow_dispatch: {}
@@ -62,9 +56,11 @@ concurrency:
   group: publish-keel-migrate
   cancel-in-progress: false
 
+# id-token: write is what lets npm trust this workflow via OIDC. Without it the
+# publish step falls back to looking for a token that no longer exists.
 permissions:
   contents: read
-  # id-token: write   <- add this when moving to trusted publishing (see above)
+  id-token: write
 
 jobs:
   publish:
@@ -108,7 +104,5 @@ jobs:
       - name: Smoke the built CLI
         run: node dist/cli.js --help
 
-      - name: Publish to npm
+      - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --access public --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
