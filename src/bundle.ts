@@ -115,6 +115,23 @@ export interface MigrationBundle {
   exportedAt: string;
   tool: { name: string; version: string };
   counts: Record<string, number>;
+  /**
+   * Position of this shard in its export, 1-based. OPTIONAL and ADDITIVE:
+   * BUNDLE_VERSION stays 1, and a bundle written before these fields existed —
+   * or by any other producer — must still import. Present on every bundle this
+   * tool writes, including a single-shard export (1 of 1).
+   *
+   * Their reason to exist is completeness verification at the destination. A
+   * sharded export is only meaningful as a set: shard 2 alone is a valid bundle
+   * carrying a third of an evidence library and no registers, and an importer
+   * with no way to know that will happily report success. With these two fields
+   * an importer can assert it holds exactly 1..shardCount before writing a
+   * single row, and refuse otherwise. A silent partial import is much worse than
+   * a rejection — the customer believes they have migrated.
+   */
+  shardIndex?: number;
+  /** Total number of shards this export was split into. See `shardIndex`. */
+  shardCount?: number;
   records: BundleRecords;
 }
 
@@ -183,6 +200,10 @@ export function shardBundle(bundle: MigrationBundle, maxBytes: number): Migratio
   if (cur.length > 0) groups.push(cur);
   if (groups.length === 0) groups.push([]); // registers-only export -> one shard
 
+  // Every shard is stamped with its position, including the 1-of-1 case, so a
+  // destination never has to infer completeness from filenames. See the field
+  // docs on MigrationBundle for why an unstamped shard set is dangerous.
+  const shardCount = groups.length;
   return groups.map((group, i): MigrationBundle => {
     if (i === 0) {
       return {
@@ -194,6 +215,8 @@ export function shardBundle(bundle: MigrationBundle, maxBytes: number): Migratio
           policies: bundle.records.policies.length,
           files: group.length,
         },
+        shardIndex: 1,
+        shardCount,
         records: { ...bundle.records, files: group },
       };
     }
@@ -203,7 +226,17 @@ export function shardBundle(bundle: MigrationBundle, maxBytes: number): Migratio
       exportedAt: bundle.exportedAt,
       tool: bundle.tool,
       counts: { vendors: 0, risks: 0, people: 0, policies: 0, files: group.length },
+      shardIndex: i + 1,
+      shardCount,
       records: { vendors: [], risks: [], people: [], policies: [], files: group },
     };
   });
 }
+
+/** Filename for shard `index` (1-based) — the loose file and the zip entry share it. */
+export function shardFileName(index: number): string {
+  return index === 1 ? 'migration-bundle.json' : `migration-bundle-${String(index).padStart(3, '0')}.json`;
+}
+
+/** Name of the single-file archive written alongside a sharded export. */
+export const ARCHIVE_FILE_NAME = 'keel-migration-bundle.zip';
