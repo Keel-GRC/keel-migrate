@@ -3,8 +3,21 @@ import assert from 'node:assert/strict';
 import { GuardedHttp, PolicyViolation } from '../src/http.js';
 import { resolvePolicy } from '../src/adapter.js';
 import { fetchEvidenceDocuments } from '../src/files.js';
-import { makeBundle, shardBundle, type BundleFile } from '../src/bundle.js';
+import {
+  makeBundle,
+  shardBundle,
+  shardFileName,
+  type BundleFile,
+  type MigrationBundle,
+} from '../src/bundle.js';
+import { crc32, zipSync } from '../src/archive.js';
 import { adapters } from '../src/registry.js';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as zlib from 'node:zlib';
+import { inflateRawSync } from 'node:zlib';
 
 // The guarded client is the runtime enforcement of "official APIs only".
 test('guarded client rejects a non-allowlisted host', async () => {
@@ -123,6 +136,188 @@ test('shardBundle splits files across shards and preserves every file', () => {
   // A small export stays one bundle.
   const one = shardBundle(makeBundle('vanta', '0.0.0', { vendors: [], risks: [], people: [], policies: [], files: [mkFile(0, 10)] }, '2026-01-01T00:00:00.000Z'), 45 * 1024 * 1024);
   assert.equal(one.length, 1);
+});
+
+/* ------------------------------------------------------------------ *
+ * Single-archive export
+ * ------------------------------------------------------------------ */
+
+/**
+ * An independent ZIP reader for the tests: it walks the CENTRAL DIRECTORY (not
+ * the writer's own bookkeeping), seeks to each declared local-header offset and
+ * inflates from there. That is the path a real unzip implementation takes, so a
+ * writer bug in offsets, sizes or signatures fails here rather than at a
+ * customer's import.
+ */
+function readZip(buf: Buffer): { name: string; data: Buffer }[] {
+  // End-of-central-directory: scan back for its signature (no comment, so it is
+  // the last 22 bytes, but search anyway rather than assume the writer's layout).
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  assert.ok(eocd >= 0, 'archive has an end-of-central-directory record');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+
+  const out: { name: string; data: Buffer }[] = [];
+  for (let i = 0; i < count; i++) {
+    assert.equal(buf.readUInt32LE(p), 0x02014b50, 'central directory header signature');
+    const method = buf.readUInt16LE(p + 10);
+    const crc = buf.readUInt32LE(p + 16);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const localOffset = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    assert.equal(method, 8, `${name} is deflated`);
+
+    // Seek to the local header and inflate from just past it.
+    assert.equal(buf.readUInt32LE(localOffset), 0x04034b50, 'local file header signature');
+    const localNameLen = buf.readUInt16LE(localOffset + 26);
+    const localExtraLen = buf.readUInt16LE(localOffset + 28);
+    assert.equal(
+      buf.toString('utf8', localOffset + 30, localOffset + 30 + localNameLen),
+      name,
+      'local and central names agree',
+    );
+    const start = localOffset + 30 + localNameLen + localExtraLen;
+    const data = inflateRawSync(buf.subarray(start, start + csize));
+    assert.equal(data.length, usize, `${name} inflates to its declared size`);
+    assert.equal(crc32(data), crc, `${name} matches its declared CRC-32`);
+    out.push({ name, data });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+// The hand-written CRC-32 must agree with a known-good implementation. It is the
+// one field an unzip tool checks byte-for-byte, so a table bug corrupts every
+// archive silently until someone tries to extract one.
+test('crc32 matches zlib for known vectors', () => {
+  assert.equal(crc32(Buffer.from('')), 0);
+  assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926); // the standard check value
+  const zlibCrc = (zlib as { crc32?: (b: Buffer) => number }).crc32;
+  if (typeof zlibCrc === 'function') {
+    for (const s of ['', 'a', 'keel-migrate', 'A'.repeat(10_000), 'éèê']) {
+      assert.equal(crc32(Buffer.from(s)), zlibCrc(Buffer.from(s)), `crc32 differs for ${JSON.stringify(s.slice(0, 12))}`);
+    }
+  }
+});
+
+// The whole point of the archive: N shards go in, exactly N valid bundles come
+// out, in a set the importer can prove is complete.
+test('a sharded export archives to exactly its shards, each a valid bundle', () => {
+  const mkFile = (i: number, kb: number): BundleFile => ({
+    externalId: `f${i}`,
+    kind: 'evidence',
+    refExternalId: null,
+    name: `f${i}.bin`,
+    contentType: 'application/octet-stream',
+    sizeBytes: kb * 1024,
+    sha256: 'x'.repeat(64),
+    contentBase64: 'A'.repeat(kb * 1024),
+  });
+  const files = Array.from({ length: 10 }, (_, i) => mkFile(i, 100));
+  const bundle = makeBundle(
+    'vanta',
+    '0.0.0',
+    {
+      vendors: [{ externalId: 'v1', name: 'V' }],
+      risks: [],
+      people: [],
+      policies: [],
+      files,
+    },
+    '2026-01-01T00:00:00.000Z',
+  );
+  const shards = shardBundle(bundle, 250 * 1024);
+  assert.ok(shards.length > 1, 'this fixture must actually shard');
+
+  // Same composition the CLI performs.
+  const zipBytes = zipSync(
+    shards.map((s, i) => ({ name: shardFileName(i + 1), data: Buffer.from(JSON.stringify(s, null, 2)) })),
+    new Date(bundle.exportedAt),
+  );
+  const entries = readZip(zipBytes);
+
+  // Exactly the shards, named exactly like the loose files.
+  assert.deepEqual(
+    entries.map((e) => e.name),
+    shards.map((_, i) => shardFileName(i + 1)),
+  );
+
+  // Every entry is itself a valid, complete v1 bundle.
+  const parsed = entries.map((e) => JSON.parse(e.data.toString('utf8')) as MigrationBundle);
+  for (const b of parsed) {
+    assert.equal(b.bundleVersion, 1);
+    assert.equal(b.source, 'vanta');
+    assert.equal(b.exportedAt, bundle.exportedAt);
+    assert.ok(Array.isArray(b.records.files));
+  }
+
+  // shardIndex/shardCount are correct, contiguous and 1-based.
+  assert.deepEqual(
+    parsed.map((b) => b.shardIndex),
+    parsed.map((_, i) => i + 1),
+  );
+  for (const b of parsed) assert.equal(b.shardCount, parsed.length);
+  const indices = new Set(parsed.map((b) => b.shardIndex));
+  assert.equal(indices.size, parsed.length, 'no duplicate shardIndex');
+  for (let i = 1; i <= parsed.length; i++) assert.ok(indices.has(i), `shard ${i} present`);
+
+  // Nothing was lost on the way through the zip.
+  const ids = parsed.flatMap((b) => b.records.files.map((f) => f.externalId)).sort();
+  assert.deepEqual(ids, files.map((f) => f.externalId).sort());
+  // Registers still ride on shard 1 only.
+  assert.equal(parsed[0]!.records.vendors.length, 1);
+  for (let i = 1; i < parsed.length; i++) assert.equal(parsed[i]!.records.vendors.length, 0);
+});
+
+// A small export must not change shape: one shard, one file, 1 of 1.
+test('a single-shard export behaves as before', () => {
+  const shards = shardBundle(
+    makeBundle(
+      'drata',
+      '0.0.0',
+      { vendors: [{ externalId: 'v1', name: 'V' }], risks: [], people: [], policies: [], files: [] },
+      '2026-01-01T00:00:00.000Z',
+    ),
+    10 * 1024 * 1024,
+  );
+  assert.equal(shards.length, 1);
+  assert.equal(shardFileName(1), 'migration-bundle.json');
+  assert.equal(shards[0]!.shardIndex, 1);
+  assert.equal(shards[0]!.shardCount, 1);
+  assert.equal(shards[0]!.records.vendors.length, 1);
+  // The shard fields are additive: the format is still version 1, and dropping
+  // them leaves a bundle indistinguishable from one written before they existed.
+  assert.equal(shards[0]!.bundleVersion, 1);
+});
+
+// The archive must be readable by something that is not us. `unzip -t` is the
+// broadest available oracle for "this file is a real ZIP".
+test('the archive passes an external unzip integrity check', (t) => {
+  const zipBytes = zipSync([
+    { name: 'migration-bundle.json', data: Buffer.from('{"bundleVersion":1}') },
+    { name: 'migration-bundle-002.json', data: Buffer.from(JSON.stringify({ a: 'B'.repeat(5000) })) },
+  ]);
+  const path = join(tmpdir(), `keel-migrate-test-${process.pid}.zip`);
+  writeFileSync(path, zipBytes);
+  try {
+    execFileSync('unzip', ['-t', path], { stdio: 'pipe' });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return t.skip('unzip not installed');
+    throw e;
+  } finally {
+    rmSync(path, { force: true });
+  }
 });
 
 // A rate-limited read (429) is retried and succeeds once the host recovers.
