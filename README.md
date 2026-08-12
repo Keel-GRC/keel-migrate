@@ -64,6 +64,35 @@ export DRATA_API_KEY='…'
 keel-migrate export --source drata --out ./out
 ```
 
+**Hyperproof** — create an OAuth client with read-only scopes in your Hyperproof
+organization, then:
+
+```bash
+export HYPERPROOF_CLIENT_ID='…'
+export HYPERPROOF_CLIENT_SECRET='…'
+keel-migrate export --source hyperproof --out ./out
+```
+
+**Oneleet** — create an API service key (Settings → API → Manage API keys; Tenant
+Admin only) and note your tenant id, then:
+
+```bash
+export ONELEET_API_KEY='service_…'
+export ONELEET_TENANT_ID='…'
+keel-migrate export --source oneleet --out ./out
+```
+
+**Secureframe** — create an API key (Console → Company settings → API keys; the
+secret is shown once). Note that Secureframe applies your role's permissions to the
+key, so a restricted role produces a partial export — the tool warns when the row
+count it received falls short of the total the API reports.
+
+```bash
+export SECUREFRAME_API_KEY='…'
+export SECUREFRAME_API_SECRET='…'
+keel-migrate export --source secureframe --out ./out
+```
+
 Either writes `./out/migration-bundle.json`. A large export additionally writes
 `migration-bundle-002.json`, `-003.json`, … and a single
 `keel-migration-bundle.zip` containing all of them — see
@@ -148,13 +177,48 @@ keeping in mind the destination's own import limit.
 
 - ✅ **Vanta** (`--source vanta`) — OAuth client-credentials, read-only
 - ✅ **Drata** (`--source drata`) — static API key, read-only
+- ✅ **Hyperproof** (`--source hyperproof`) — OAuth client-credentials
+  (`HYPERPROOF_CLIENT_ID`, `HYPERPROOF_CLIENT_SECRET`), read-only scopes. The only
+  platform here that documents an evidence **file-contents** endpoint, so evidence
+  bytes travel with the bundle. US host only for now: all three published specs
+  declare the same US token URL, and we will not guess the EU/GovCloud one.
+- ✅ **Oneleet** (`--source oneleet`) — static service key
+  (`ONELEET_API_KEY`, `ONELEET_TENANT_ID`), read-only. Exports vendors, risks,
+  people and policies. Evidence **metadata** exists in their API but no documented
+  endpoint returns a file's bytes, so evidence is not exported rather than
+  exported as empty shells.
+- ✅ **Secureframe** (`--source secureframe`) — API key + secret
+  (`SECUREFRAME_API_KEY`, `SECUREFRAME_API_SECRET`), read-only. Exports vendors,
+  risks and people. **No policies and no evidence files**: their public API has no
+  policy-library endpoint (`/ssp_policies` is System-Security-Plan-scoped and
+  carries no document), and nothing documented resolves an evidence `document_id`
+  to bytes. Their risk records carry ALE inputs rather than likelihood/impact, so
+  those two scores come through as `null` with the quantitative fields in `raw`.
 - 🧪 **OneTrust** (`--source onetrust`) — OAuth client-credentials against your own
   tenant host. Set `ONETRUST_HOSTNAME` (e.g. `yourco.my.onetrust.com`),
   `ONETRUST_CLIENT_ID`, `ONETRUST_CLIENT_SECRET`. Exports **users** and the **risk
   register** today; built to OneTrust's public API docs — validate against your
   tenant, and expect vendors/policies to follow once their per-tenant list paths
   are confirmed.
-- 🚧 Secureframe and others — [contributions welcome](./CONTRIBUTING.md)
+
+### Platforms we looked at and could not build
+
+An adapter is only possible where the platform publishes endpoint-level
+documentation — every manifest declares a doc URL per endpoint and a test enforces
+it. That rule exists because an adapter built on a guessed path fails against your
+real credentials, at the moment you are trying to leave. Recorded here so nobody
+repeats the search:
+
+| Platform | Why not |
+|----------|---------|
+| **Apptega** | No public endpoint docs. The API host 403s, there is no `docs.`/`developer.` subdomain, the knowledge base 404s, and the sitemap carries no API page. Their "open API" is a sales statement routing you to their team. |
+| **Sprinto** | GraphQL, and the schema is only obtainable by introspection with a valid key. Public docs name no read query for vendors, risks, people, policies or evidence. |
+| **Thoropass** | Developer portal exists but returns 401 `/inactive`; the partner API is behind their Integration Partner Program. |
+| **Scrut** | No API documentation exists publicly at all. |
+| **Conveyor** | Documented and specced, but it is a questionnaire/trust-centre product — no risks, people or policies to export. |
+
+If you have credentials and vendor documentation for any of these,
+[contributions are welcome](./CONTRIBUTING.md).
 
 ## The bundle format
 
