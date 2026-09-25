@@ -75,8 +75,16 @@ async function listAll<T>(http: GuardedHttp, token: string, path: string): Promi
 }
 
 const norm = (s: unknown): string => String(s ?? '').trim().toLowerCase();
+/**
+ * A 1-5 score, or null when Vanta has none. Only a number or a non-empty numeric
+ * string is a score: `Number(null)` and `Number('')` are 0, which the clamp used to
+ * lift to 1, so an unscored risk exported as likelihood 1 x impact 1, a real and
+ * wrong assessment. Null, undefined, blanks, booleans and non-finite values are null,
+ * as in the other adapters.
+ */
 const clamp15 = (n: unknown): number | null => {
-  const v = typeof n === 'number' ? n : Number(n);
+  const v =
+    typeof n === 'number' ? n : typeof n === 'string' && n.trim() !== '' ? Number(n) : NaN;
   return Number.isFinite(v) ? Math.min(5, Math.max(1, Math.round(v))) : null;
 };
 
