@@ -1,0 +1,19 @@
+# Change approval for high-risk paths (D959, D984; SOC 2 CC8.1).
+#
+# This package is published to npm and runs on customers' machines, so a change to how
+# it is built, versioned or published needs an approving review from @cbrock84 before it
+# merges. Everything else merges on green checks (D850). The file only takes effect while
+# the repository's "main protection" ruleset has "Require review from Code Owners" on.
+#
+# There is deliberately no catch-all `*` rule: that would put a human review on every
+# pull request, which D959 did not choose.
+
+# This file itself, so a pull request cannot drop a path without the approval it needs.
+/.github/CODEOWNERS @cbrock84
+
+# Workflows. publish.yml publishes to npm with OIDC trusted publishing.
+/.github/workflows/ @cbrock84
+
+# The manifest and lockfile decide what ships, its version, and what runs on install.
+/package.json @cbrock84
+/package-lock.json @cbrock84
