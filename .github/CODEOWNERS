@@ -1,4 +1,4 @@
-# Change approval for high-risk paths (D959, D984; SOC 2 CC8.1).
+# Change approval for high-risk paths (D959, D988; SOC 2 CC8.1).
 #
 # This package is published to npm and runs on customers' machines, so a change to how
 # it is built, versioned or published needs an approving review from @cbrock84 before it
