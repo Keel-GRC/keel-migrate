@@ -1,0 +1,47 @@
+name: CI
+
+# Runs on every pull request and every push to main the same checks publish.yml
+# runs before it ships, so a change is tested before it merges and not only at
+# release time (SOC 2 CC8.1). It holds no publishing authority: no id-token, no
+# registry login, no publish step.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Same pinned npm as publish.yml, so CI installs with the toolchain that ships.
+      - name: Install the pinned npm
+        run: npm install -g --ignore-scripts npm@12.0.2
+
+      - name: Install (locked, no install scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Audit
+        run: npm audit --audit-level=high
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Smoke the built CLI
+        run: node dist/cli.js --help
